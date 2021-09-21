@@ -2532,7 +2532,7 @@ long myst_syscall_connect(
     if (type != MYST_FDTABLE_TYPE_SOCK)
         ERAISE(-ENOTSOCK);
 
-    if (!myst_is_bad_addr(addr))
+    if (!myst_is_addr_within_kernel(addr))
         ERAISE(-EFAULT);
 
     ret = (*sd->sd_connect)(sd, sock, addr, addrlen);
@@ -2671,8 +2671,18 @@ long myst_syscall_getsockname(
     myst_fdtable_t* fdtable = myst_fdtable_current();
     myst_sockdev_t* sd;
     myst_sock_t* sock;
+    myst_fdtable_type_t type;
 
-    ECHECK(myst_fdtable_get_sock(fdtable, sockfd, &sd, &sock));
+    if (!myst_is_addr_within_kernel(addrlen) ||
+        !myst_is_addr_within_kernel(addr))
+        ERAISE(-EFAULT);
+
+    ECHECK(myst_fdtable_get_any(
+        fdtable, sockfd, &type, (void**)&sd, (void**)&sock));
+
+    if (type != MYST_FDTABLE_TYPE_SOCK)
+        ERAISE(-ENOTSOCK);
+
     ret = (*sd->sd_getsockname)(sd, sock, addr, addrlen);
 
 done:
@@ -2899,49 +2909,6 @@ long myst_syscall_getrusage(int who, struct rusage* usage)
     usage->ru_utime.tv_usec = utime % 1000000000 * 1000;
     usage->ru_stime.tv_sec = stime / 1000000000;
     usage->ru_stime.tv_usec = stime % 1000000000 * 1000;
-
-    return 0;
-}
-
-long myst_syscall_prlimit64(
-    int pid,
-    int resource,
-    struct rlimit* new_rlim,
-    struct rlimit* old_rlim)
-{
-    if (resource >= RLIM_NLIMITS)
-        return -EINVAL;
-
-    // Only support for current process
-    if (pid)
-        return -EINVAL;
-
-    if (resource == RLIMIT_NOFILE)
-    {
-        if (old_rlim)
-        {
-            // ATTN: return currently effective RLIMIT_NOFILE settings
-            old_rlim->rlim_cur = 65536;
-            old_rlim->rlim_max = 65536;
-        }
-
-        if (new_rlim)
-        {
-            // ATTN: make RLIMIT_NOFILE settings effective ;
-        }
-    }
-    else if (resource == RLIMIT_STACK)
-    {
-        if (old_rlim)
-        {
-            old_rlim->rlim_cur = MYST_PROCESS_INIT_STACK_SIZE;
-            old_rlim->rlim_max = MYST_PROCESS_MAX_STACK_SIZE;
-        }
-    }
-    else
-    {
-        return -EINVAL;
-    }
 
     return 0;
 }
@@ -6327,14 +6294,14 @@ static long _syscall(void* args_)
         default:
         {
             if (__myst_kernel_args.unhandled_syscall_enosys == true)
-                syscall_ret = ENOSYS;
+                syscall_ret = -ENOSYS;
             else
                 myst_panic("unknown syscall: %s(): %ld", _syscall_str(n), n);
         }
     }
 
     if (__myst_kernel_args.unhandled_syscall_enosys == true)
-        syscall_ret = ENOSYS;
+        syscall_ret = -ENOSYS;
     else
         myst_panic("unhandled syscall: %s()", _syscall_str(n));
 

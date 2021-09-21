@@ -43,6 +43,7 @@ jobs:
           sudo apt-get install build-essential python3-setuptools libmbedtls-dev docker-ce -y
           sudo chmod 666 /var/run/docker.sock
           sudo apt install python3-pip -y
+          sudo apt install lldb-10 -y
         displayName: 'minimum init config'
 
       # build all source files
@@ -74,6 +75,8 @@ jobs:
           DB_NAME: $(DB_NAME_USEAST)
           DB_SERVER_NAME: $(DB_SERVER_NAME_USEAST)
           MAA_URL: $(DB_MAA_URL_USEAST)
+          # If set, don't run certain tests
+          MYST_SKIP_PR_TEST: 1
           
       - script: |
           make clean -C $(Build.SourcesDirectory)/tests
