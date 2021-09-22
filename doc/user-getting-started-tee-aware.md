@@ -217,8 +217,6 @@ First we declare the desire in the config.json:
 
     // Whether we are running myst+OE+app in debug mode
     "Debug": 1,
-    // The number of ethreads
-    "NumUserThreads": 32,
     "ProductID": 1,
     "SecurityVersion": 1,
 
@@ -234,6 +232,7 @@ First we declare the desire in the config.json:
     "HostApplicationParameters": false,
     // The environment variables accessible inside the enclave.
     "EnvironmentVariables": ["COMPlus_EnableDiagnostics=0", "MYST_WANT_TEE_CREDENTIALS=CERT_PEMKEY_REPORT"],
+    "UnhandledSyscallEnosys": false
 }
 ```
 

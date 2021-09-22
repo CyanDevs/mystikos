@@ -15,12 +15,11 @@ DIRS += libc
 endif
 
 DIRS += args
-DIRS += alpine
 DIRS += pthread
 DIRS += urandom
 DIRS += buf
 DIRS += cpuid
-DIRS += hello
+DIRS += hello_world
 DIRS += shlib
 DIRS += getcwd
 DIRS += rdtsc
@@ -36,6 +35,7 @@ DIRS += conf
 DIRS += nbio
 DIRS += thread
 DIRS += gdb
+DIRS += lldb
 
 DIRS += dlopen
 DIRS += pipe
@@ -105,7 +105,6 @@ DIRS += msync
 
 DIRS += robust
 DIRS += devfs
-DIRS += callonce
 DIRS += syscall_exception
 DIRS += mutex
 DIRS += mprotect
@@ -117,6 +116,14 @@ DIRS += thread_abort
 DIRS += synccall
 DIRS += python_subprocess
 DIRS += python_vfork
+DIRS += fcntl
+DIRS += stacksize
+DIRS += math
+DIRS += unhandled_syscall_enosys
+
+ifdef MYST_NIGHTLY_TEST
+DIRS += glibc
+endif
 
 .PHONY: $(DIRS)
 
@@ -137,3 +144,11 @@ clean:
 	@ $(foreach i, $(DIRS), $(MAKE) -C $(i) clean $(NL) )
 
 distclean: clean
+
+pipe-tests:
+	$(MAKE) -C pipe tests
+	$(MAKE) -C pollpipe tests
+	$(MAKE) -C pollpipe2 tests
+	$(MAKE) -C spawn tests
+	$(MAKE) -C spawnfa tests
+	$(MAKE) -C ltp pipe-tests

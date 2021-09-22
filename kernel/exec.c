@@ -825,13 +825,13 @@ int myst_exec(
     int ret = 0;
     void* stack = NULL;
     void* sp = NULL;
-    const size_t stack_size = MYST_PROCESS_INIT_STACK_SIZE;
     void* crt_data = NULL;
     const Elf64_Ehdr* ehdr = NULL;
     const Elf64_Phdr* phdr = NULL;
     uint64_t* dynv = NULL;
     enter_t enter;
     char* envp_buf[] = {NULL};
+    myst_process_t* process = NULL;
 
     if (!envp)
         envp = (const char**)envp_buf;
@@ -847,14 +847,16 @@ int myst_exec(
     if ((crt_size % PAGE_SIZE) != 0)
         ERAISE(-EINVAL);
 
+    process = thread->process;
+
     /* allocate and zero-fill the new CRT image */
     {
         const int prot = PROT_READ | PROT_WRITE | PROT_EXEC;
         const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
-        crt_data = myst_mmap(NULL, crt_size, prot, flags, -1, 0);
+        crt_data = (void*)myst_mmap(NULL, crt_size, prot, flags, -1, 0);
 
-        if (crt_data == (void*)-1)
+        if ((long)crt_data < 0)
             ERAISE(-ENOMEM);
     }
 
@@ -945,7 +947,7 @@ int myst_exec(
               argv,
               envc,
               envp,
-              stack_size,
+              __myst_kernel_args.main_stack_size,
               crt_data,
               phdr,
               ehdr->e_phnum,
@@ -956,17 +958,33 @@ int myst_exec(
         ERAISE(-ENOMEM);
     }
 
-    assert(elf_check_stack(stack, stack_size) == 0);
+    assert(elf_check_stack(stack, __myst_kernel_args.main_stack_size) == 0);
 
     /* create "/proc/<pid>/exe" which is a link to the program executable */
     if (_setup_exe_link(argv[0]) != 0)
         ERAISE(-EIO);
 
+    /* if this is a nested exec, then release previous exec's stack */
+    if (process->exec_stack)
+    {
+        free(process->exec_stack);
+        process->exec_stack = NULL;
+        process->exec_stack_size = 0;
+    }
+
+    /* if this is a nested exec, then release previous exec's CRT data */
+    if (process->exec_crt_data && process->exec_crt_size)
+    {
+        myst_munmap(process->exec_crt_data, process->exec_crt_size);
+        process->exec_crt_data = NULL;
+        process->exec_crt_size = 0;
+    }
+
     /* The thread is responsible for freeing the stack */
-    thread->main.exec_stack = stack;
-    thread->main.exec_stack_size = stack_size;
-    thread->main.exec_crt_data = crt_data;
-    thread->main.exec_crt_size = crt_size;
+    process->exec_stack = stack;
+    process->exec_stack_size = __myst_kernel_args.main_stack_size;
+    process->exec_crt_data = crt_data;
+    process->exec_crt_size = crt_size;
 
     /* close file descriptors with FD_CLOEXEC flag */
     {
@@ -983,13 +1001,13 @@ int myst_exec(
      * safe to re-enable the cleanup.
      * At the same time we may need to wake the parent processes thread that
      * launched us in the case we were created in the fork/exec wait mode. */
-    if (thread->clone.flags & CLONE_VFORK)
+    if (process->is_pseudo_fork_process)
     {
-        myst_fork_exec_futex_wake(thread);
+        myst_fork_exec_futex_wake(process);
 
-        thread->clone.flags &= ~CLONE_VFORK;
-        thread->clone.vfork_parent_tid = 0;
-        thread->clone.vfork_parent_pid = 0;
+        process->is_pseudo_fork_process = false;
+        process->vfork_parent_tid = 0;
+        process->vfork_parent_pid = 0;
     }
 
     /* invoke the caller's callback here */
@@ -1000,10 +1018,10 @@ int myst_exec(
     (*enter)(sp, dynv, myst_syscall);
     /* unreachable */
 
-    thread->main.exec_stack = NULL;
-    thread->main.exec_stack_size = 0;
-    thread->main.exec_crt_data = NULL;
-    thread->main.exec_crt_size = 0;
+    process->exec_stack = NULL;
+    process->exec_stack_size = 0;
+    process->exec_crt_data = NULL;
+    process->exec_crt_size = 0;
     ERAISE(-ENOEXEC);
 
 done:

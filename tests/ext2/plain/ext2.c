@@ -161,6 +161,131 @@ int mock_mount_resolve(
     return 0;
 }
 
+static void _rand_name(char buf[PATH_MAX])
+{
+    size_t len = random() % EXT2_PATH_MAX;
+
+    if (len == 0)
+        len++;
+
+    const char chars[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+    assert(len <= EXT2_PATH_MAX);
+
+    for (size_t i = 0; i < len; i++)
+    {
+        buf[i] = chars[random() % (sizeof(chars) - 1)];
+        buf[i + 1] = '\0';
+    }
+}
+
+static void _test_dir_entries(myst_fs_t* fs)
+{
+    const char path[] = "/dirents";
+    const size_t N = 1093;
+    char* names[N];
+    struct stat statbuf;
+
+    /* create the root directory */
+    assert(ext2_mkdir(fs, path, 0755) == 0);
+
+    /* generate the random names */
+    {
+        srandom(12345);
+
+        for (size_t i = 0; i < N; i++)
+        {
+            char buf[PATH_MAX];
+
+            for (;;)
+            {
+                bool found = false;
+
+                _rand_name(buf);
+
+                for (size_t j = 0; j < i; j++)
+                {
+                    if (strcmp(names[j], buf) == 0)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found)
+                    break;
+            }
+
+            names[i] = strdup(buf);
+        }
+    }
+
+    /* create the directories */
+    for (size_t i = 0; i < N; i++)
+    {
+        char tmp[PATH_MAX];
+        snprintf(tmp, sizeof(tmp), "%s/%s", path, names[i]);
+        assert(ext2_mkdir(fs, tmp, 0755) == 0);
+        assert(ext2_stat(fs, tmp, &statbuf) == 0);
+    }
+
+    /* verify that the newly created directories exist */
+    for (size_t i = 0; i < N; i++)
+    {
+        char tmp[PATH_MAX];
+        snprintf(tmp, sizeof(tmp), "%s/%s", path, names[i]);
+        assert(ext2_stat(fs, tmp, &statbuf) == 0);
+    }
+
+    /* remove every third entry */
+    for (size_t i = 0; i < N; i += 3)
+    {
+        char tmp[PATH_MAX];
+        snprintf(tmp, sizeof(tmp), "%s/%s", path, names[i]);
+        assert(ext2_rmdir(fs, tmp) == 0);
+        assert(ext2_stat(fs, tmp, &statbuf) == -ENOENT);
+    }
+
+    /* add back every third entry */
+    for (size_t i = 0; i < N; i += 3)
+    {
+        char tmp[PATH_MAX];
+        snprintf(tmp, sizeof(tmp), "%s/%s", path, names[i]);
+        assert(ext2_mkdir(fs, tmp, 0755) == 0);
+        assert(ext2_stat(fs, tmp, &statbuf) == 0);
+    }
+
+    /* remove the even entries */
+    for (size_t i = 0; i < N; i += 2)
+    {
+        char tmp[PATH_MAX];
+        snprintf(tmp, sizeof(tmp), "%s/%s", path, names[i]);
+        assert(ext2_rmdir(fs, tmp) == 0);
+        assert(ext2_stat(fs, tmp, &statbuf) == -ENOENT);
+        free(names[i]);
+        names[i] = NULL;
+    }
+
+    /* remove whatever entries remain in reverse order */
+    for (size_t i = N; i > 0; i--)
+    {
+        size_t index = i - 1;
+
+        if (names[index])
+        {
+            char tmp[PATH_MAX];
+            snprintf(tmp, sizeof(tmp), "%s/%s", path, names[index]);
+            assert(ext2_rmdir(fs, tmp) == 0);
+            assert(ext2_stat(fs, tmp, &statbuf) == -ENOENT);
+            free(names[index]);
+            names[index] = NULL;
+        }
+    }
+
+    /* remove the root directory (will fail if any entries) */
+    assert(ext2_rmdir(fs, path) == 0);
+}
+
 int main(int argc, const char* argv[])
 {
     myst_blkdev_t* dev;
@@ -1040,6 +1165,41 @@ int main(int argc, const char* argv[])
 
         fclose(os);
         fclose(is);
+    }
+
+    _test_dir_entries(fs);
+
+    /* test using of file after it has been unlinked */
+    {
+        const char path[] = "/use_after_unlink";
+        myst_file_t* file;
+
+        /* open the file for write */
+        const int open_flags = O_CREAT | O_TRUNC | O_RDWR;
+        assert(ext2_open(fs, path, open_flags, 0666, NULL, &file) == 0);
+
+        /* unlink the file */
+        assert(ext2_unlink(fs, path) == 0);
+
+        /* verify that the pathname no longer exists */
+        assert(ext2_access(fs, path, F_OK) == -ENOENT);
+
+        /* write to the file */
+        assert(ext2_write(fs, file, alpha, sizeof(alpha)) == sizeof(alpha));
+
+        /* verify that the file is the newly written size */
+        struct stat statbuf;
+        assert(ext2_fstat(fs, file, &statbuf) == 0);
+        assert(statbuf.st_size == sizeof(alpha));
+
+        /* attempt to read the data back */
+        uint8_t buf[2 * sizeof(alpha)];
+        assert(ext2_lseek(fs, file, 0, SEEK_SET) == 0);
+        assert(ext2_read(fs, file, buf, sizeof(buf)) == sizeof(alpha));
+        assert(memcmp(buf, alpha, sizeof(alpha)) == 0);
+
+        /* close the file */
+        ext2_close(fs, file);
     }
 
     assert(ext2_check(__ext2) == 0);

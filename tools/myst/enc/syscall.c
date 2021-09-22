@@ -125,6 +125,8 @@ static long _fcntl(int fd, int cmd, long arg)
         case F_SETSIG:
         case F_GETOWN:
         case F_SETOWN:
+        case F_GETPIPE_SZ:
+        case F_SETPIPE_SZ:
         {
             if (myst_fcntl_ocall(&retval, fd, cmd, arg) != OE_OK)
             {
@@ -524,7 +526,13 @@ static long _getsockname(int sockfd, struct sockaddr* addr, socklen_t* addrlen)
     long retval;
     socklen_t n;
 
-    if (sockfd < 0 || !addr || !addrlen)
+    if (sockfd < 0)
+    {
+        ret = -EBADF;
+        goto done;
+    }
+
+    if (!addr || !addrlen || *addrlen < 0)
     {
         ret = -EINVAL;
         goto done;
@@ -1601,6 +1609,139 @@ done:
 }
 #endif
 
+static int _pipe2(int pipefd[2], int flags)
+{
+    int ret = 0;
+    long retval;
+
+    if (!pipefd)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    if (myst_pipe2_ocall(&retval, pipefd, flags) != OE_OK)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    ret = retval;
+
+done:
+    return ret;
+}
+
+static long _epoll_create1(int flags)
+{
+    long ret = 0;
+    long retval;
+
+    if (myst_epoll_create1_ocall(&retval, flags) != OE_OK)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    ret = retval;
+
+done:
+    return ret;
+}
+
+static long _epoll_wait(
+    int epfd,
+    struct epoll_event* events,
+    size_t maxevents,
+    int timeout)
+{
+    long ret = 0;
+    long retval;
+
+    if (epfd < 0 || !events || maxevents == 0)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    if (myst_epoll_wait_ocall(&retval, epfd, events, maxevents, timeout) !=
+        OE_OK)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    /* check for error */
+    if (retval < 0)
+    {
+        ret = retval;
+        goto done;
+    }
+
+    /* guard against possible read past end of buffer */
+    if ((size_t)retval > maxevents)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    ret = retval;
+
+done:
+    return ret;
+}
+
+static long _epoll_ctl(
+    int epfd,
+    int op,
+    int fd,
+    const struct epoll_event* event)
+{
+    long ret = 0;
+    long retval;
+    struct epoll_event event_buf;
+
+    if (epfd < 0)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    if (!event)
+    {
+        memset(&event_buf, 0, sizeof(event_buf));
+        event = &event_buf;
+    }
+
+    if (myst_epoll_ctl_ocall(&retval, epfd, op, fd, event) != OE_OK)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    ret = retval;
+
+done:
+    return ret;
+}
+
+static long _eventfd2(unsigned int initval, int flags)
+{
+    long ret = 0;
+    long retval;
+
+    if (myst_eventfd_ocall(&retval, initval, flags) != OE_OK)
+    {
+        ret = -EINVAL;
+        goto done;
+    }
+
+    ret = retval;
+
+done:
+    return ret;
+}
+
 long myst_handle_tcall(long n, long params[6])
 {
     const long a = params[0];
@@ -1867,6 +2008,28 @@ long myst_handle_tcall(long n, long params[6])
         case SYS_getcpu:
         {
             return _getcpu((unsigned*)a, (unsigned*)b);
+        }
+        case SYS_pipe2:
+        {
+            return _pipe2((int*)a, (int)b);
+        }
+        case SYS_epoll_create1:
+        {
+            return _epoll_create1((int)a);
+        }
+        case SYS_epoll_wait:
+        {
+            return _epoll_wait(
+                (int)a, (struct epoll_event*)b, (size_t)c, (int)d);
+        }
+        case SYS_epoll_ctl:
+        {
+            return _epoll_ctl(
+                (int)a, (int)b, (int)c, (const struct epoll_event*)d);
+        }
+        case SYS_eventfd2:
+        {
+            return _eventfd2(a, b);
         }
         default:
         {

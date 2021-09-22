@@ -10,76 +10,60 @@
 #include <myst/syscall.h>
 #include <myst/tcall.h>
 
-void myst_set_fsbase(void* p)
+void __myst_set_fsbase(void* p)
 {
-    if (__myst_kernel_args.have_fsgsbase_instructions)
-    {
-        __asm__ volatile("wrfsbase %0" ::"r"(p));
-    }
-    else if (__options.have_syscall_instruction)
+    if (__options.have_syscall_instruction)
     {
         myst_syscall2(SYS_arch_prctl, ARCH_SET_FS, (long)p);
     }
     else
     {
-        /* attempt WRFSBASE emulation */
+        /* Attempt OE WRFSBASE emulation */
         __asm__ volatile("wrfsbase %0" ::"r"(p));
     }
 }
 
-void* myst_get_fsbase(void)
+void* __myst_get_fsbase(void)
 {
-    void* p;
-
-    if (__options.have_fsgsbase_instructions)
+    if (__options.have_syscall_instruction)
     {
-        __asm__ volatile("rdfsbase %0" : "=r"(p));
-    }
-    else if (__options.have_syscall_instruction)
-    {
+        void* p;
         myst_syscall2(SYS_arch_prctl, ARCH_GET_FS, (long)&p);
+        return p;
     }
     else
     {
+        void* p;
         __asm__ volatile("mov %%fs:0, %0" : "=r"(p));
+        return p;
     }
-
-    return p;
 }
 
-void myst_set_gsbase(void* p)
+void __myst_set_gsbase(void* p)
 {
-    if (__myst_kernel_args.have_fsgsbase_instructions)
-    {
-        __asm__ volatile("wrgsbase %0" ::"r"(p));
-    }
-    else if (__options.have_syscall_instruction)
+    if (__options.have_syscall_instruction)
     {
         myst_syscall2(SYS_arch_prctl, ARCH_SET_GS, (long)p);
     }
     else
     {
-        /* attempt WRGSBASE emulation */
+        /* Attempt OE WRFSBASE emulation */
         __asm__ volatile("wrgsbase %0" ::"r"(p));
     }
 }
 
-void* myst_get_gsbase(void)
+void* __myst_get_gsbase(void)
 {
-    void* p;
-
-    if (__options.have_fsgsbase_instructions)
+    if (__options.have_syscall_instruction)
     {
-        __asm__ volatile("rdgsbase %0" : "=r"(p));
-    }
-    else if (__options.have_syscall_instruction)
-    {
+        void* p;
         myst_syscall2(SYS_arch_prctl, ARCH_GET_GS, (long)&p);
+        return p;
     }
     else
     {
+        void* p;
         __asm__ volatile("mov %%gs:0, %0" : "=r"(p));
+        return p;
     }
-
-    return p;
 }

@@ -15,6 +15,7 @@
 #include <myst/eraise.h>
 #include <myst/fdtable.h>
 #include <myst/fs.h>
+#include <myst/hostfs.h>
 #include <myst/iov.h>
 #include <myst/realpath.h>
 #include <myst/strings.h>
@@ -1222,6 +1223,20 @@ done:
     return ret;
 }
 
+static int _fs_release_tree(myst_fs_t* fs, const char* pathname)
+{
+    int ret = 0;
+    hostfs_t* hostfs = (hostfs_t*)fs;
+
+    if (!_hostfs_valid(hostfs) || !pathname)
+        ERAISE(-EINVAL);
+
+    ret = -ENOTSUP;
+
+done:
+    return ret;
+}
+
 int myst_init_hostfs(myst_fs_t** fs_out)
 {
     int ret = 0;
@@ -1284,6 +1299,7 @@ int myst_init_hostfs(myst_fs_t** fs_out)
         .fs_fchmod = _fs_fchmod,
         .fs_fdatasync = _fs_fdatasync,
         .fs_fsync = _fs_fsync,
+        .fs_release_tree = _fs_release_tree,
     };
     // clang-format on
 
@@ -1309,6 +1325,11 @@ done:
         free(hostfs);
 
     return ret;
+}
+
+bool myst_is_hostfs(const myst_fs_t* fs)
+{
+    return _hostfs_valid((hostfs_t*)fs);
 }
 
 #endif /* MYST_ENABLE_HOSTFS */

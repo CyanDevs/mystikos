@@ -56,6 +56,7 @@ typedef struct ramfs
     char target[PATH_MAX]; /* target argument to myst_mount() */
     myst_mount_resolve_callback_t resolve;
     size_t ninodes;
+    myst_fs_t* lockfs;
 } ramfs_t;
 
 static bool _ramfs_valid(const ramfs_t* ramfs)
@@ -414,7 +415,7 @@ done:
 static const char* _inode_target(inode_t* inode)
 {
     if (inode->v_type == OPEN)
-        inode->v_cb.open_cb(&inode->buf);
+        inode->v_cb.open_cb(&inode->buf, NULL);
     return (const char*)inode->buf.data;
 }
 
@@ -434,7 +435,7 @@ struct myst_file
     inode_t* inode;
     size_t offset;      /* the current file offset (files) */
     uint32_t access;    /* (O_RDONLY | O_RDWR | O_WRONLY) */
-    uint32_t operating; /* (O_RDONLY | O_RDWR | O_WRONLY) */
+    uint32_t operating; /* (O_APPEND | O_DIRECT | O_NOATIME) */
     int fdflags;        /* file descriptor flags: FD_CLOEXEC */
     char realpath[PATH_MAX];
     myst_buf_t vbuf; /* virtual file buffer */
@@ -836,7 +837,10 @@ static int _fs_open(
     {
         /* i.e, path resolving has terminated,
         file resides in the current fs. */
-        *fs_out = (myst_fs_t*)ramfs;
+        if (ramfs->lockfs)
+            *fs_out = ramfs->lockfs;
+        else
+            *fs_out = (myst_fs_t*)ramfs;
     }
 
     /* If the file already exists */
@@ -878,8 +882,12 @@ static int _fs_open(
         if ((flags & O_APPEND))
             file->offset = inode->buf.size;
 
+        /* Get the realpath of this file */
+        ECHECK(_path_to_inode_realpath(
+            ramfs, pathname, true, NULL, &inode, file->realpath, NULL));
+
         if (inode->v_type == OPEN)
-            ECHECK((*inode->v_cb.open_cb)(&file->vbuf));
+            ECHECK((*inode->v_cb.open_cb)(&file->vbuf, file->realpath));
     }
     else if (errnum == -ENOENT)
     {
@@ -900,6 +908,10 @@ static int _fs_open(
         /* Create the new file inode */
         ECHECK(_inode_new(
             ramfs, parent, locals->basename, (S_IFREG | mode), &inode));
+
+        /* Get the realpath of this file */
+        ECHECK(_path_to_inode_realpath(
+            ramfs, pathname, true, NULL, &inode, file->realpath, NULL));
     }
     else
     {
@@ -913,10 +925,6 @@ static int _fs_open(
     file->operating = (flags & O_APPEND);
     file->use_count = 1;
     inode->nopens++;
-
-    /* Get the realpath of this file */
-    ECHECK(_path_to_inode_realpath(
-        ramfs, pathname, true, NULL, &inode, file->realpath, NULL));
 
     assert(_file_valid(file));
 
@@ -2053,7 +2061,7 @@ static ssize_t _fs_readlink(
 
     if (inode->v_type == OPEN)
     {
-        inode->v_cb.open_cb(&inode->buf);
+        inode->v_cb.open_cb(&inode->buf, NULL);
     }
     else
     {
@@ -2201,6 +2209,18 @@ static int _fs_fcntl(myst_fs_t* fs, myst_file_t* file, int cmd, long arg)
         case F_GETFL:
         {
             ret = (int)(file->access | file->operating);
+            goto done;
+        }
+        case F_SETFL:
+        {
+            if (arg & O_APPEND)
+                file->operating |= O_APPEND;
+            if (arg & O_DIRECT)
+                // ATTN: implement O_DIRECT for files
+                file->operating |= O_DIRECT;
+            if (arg & O_NOATIME)
+                // ATTN: implement O_NOATIME for files
+                file->operating |= O_NOATIME;
             goto done;
         }
         case F_SETLKW:
@@ -2644,6 +2664,68 @@ done:
     return ret;
 }
 
+static int _fs_release_tree(myst_fs_t* fs, const char* pathname)
+{
+    int ret = 0;
+    ramfs_t* ramfs = (ramfs_t*)fs;
+    inode_t *parent, *self;
+    struct locals
+    {
+        char dirname[PATH_MAX];
+        char basename[PATH_MAX];
+    };
+    struct locals* locals = NULL;
+
+    if (!_ramfs_valid(ramfs))
+        ERAISE(-EINVAL);
+
+    if (!pathname)
+        ERAISE(-EINVAL);
+
+    if (!(locals = malloc(sizeof(struct locals))))
+        ERAISE(-ENOMEM);
+
+    ECHECK(_path_to_inode(ramfs, pathname, true, &parent, &self, NULL, NULL));
+
+    if (!_inode_valid(parent) || !_inode_valid(self))
+        ERAISE(-EINVAL);
+
+    /* Release all inodes in the sub-tree under self*/
+    {
+        int type, mode = self->mode;
+        if (S_ISDIR(mode))
+            type = DT_DIR;
+        else if (S_ISREG(mode))
+            type = DT_REG;
+        else if (S_ISLNK(mode))
+            type = DT_LNK;
+        else
+        {
+            ERAISE(-EINVAL);
+        }
+
+        _inode_release_all(ramfs, parent, self, type);
+    }
+
+    /* Remove directory entry from parent */
+    {
+        /* Get the parent inode */
+        ECHECK(_split_path(pathname, locals->dirname, locals->basename));
+
+        /* Find and remove the parent's directory entry */
+        {
+            ECHECK(_inode_remove_dirent(parent, locals->basename));
+        }
+    }
+
+done:
+
+    if (locals)
+        free(locals);
+
+    return ret;
+}
+
 static int _init_ramfs(
     myst_mount_resolve_callback_t resolve_cb,
     myst_fs_t** fs_out)
@@ -2708,6 +2790,7 @@ static int _init_ramfs(
         .fs_fchmod = _fs_fchmod,
         .fs_fdatasync = _fs_fsync_and_fdatasync,
         .fs_fsync = _fs_fsync_and_fdatasync,
+        .fs_release_tree = _fs_release_tree,
     };
     // clang-format on
     inode_t* root_inode = NULL;
@@ -2755,6 +2838,7 @@ int myst_init_ramfs(
     /* always wrap ramfs inside lockfs */
     ECHECK(_init_ramfs(resolve_cb, &ramfs));
     ECHECK(myst_lockfs_init(ramfs, &lockfs));
+    ((ramfs_t*)ramfs)->lockfs = lockfs;
     ramfs = NULL;
     *fs_out = lockfs;
 
@@ -2869,68 +2953,6 @@ int myst_create_virtual_file(
     ret = 0;
 
 done:
-
-    return ret;
-}
-
-int myst_release_tree(myst_fs_t* fs, const char* pathname)
-{
-    int ret = 0;
-    ramfs_t* ramfs = _ramfs(fs);
-    inode_t *parent, *self;
-    struct locals
-    {
-        char dirname[PATH_MAX];
-        char basename[PATH_MAX];
-    };
-    struct locals* locals = NULL;
-
-    if (!_ramfs_valid(ramfs))
-        ERAISE(-EINVAL);
-
-    if (!pathname)
-        ERAISE(-EINVAL);
-
-    if (!(locals = malloc(sizeof(struct locals))))
-        ERAISE(-ENOMEM);
-
-    ECHECK(_path_to_inode(ramfs, pathname, true, &parent, &self, NULL, NULL));
-
-    if (!_inode_valid(parent) || !_inode_valid(self))
-        ERAISE(-EINVAL);
-
-    /* Release all inodes in the sub-tree under self*/
-    {
-        int type, mode = self->mode;
-        if (S_ISDIR(mode))
-            type = DT_DIR;
-        else if (S_ISREG(mode))
-            type = DT_REG;
-        else if (S_ISLNK(mode))
-            type = DT_LNK;
-        else
-        {
-            ERAISE(-EINVAL);
-        }
-
-        _inode_release_all(ramfs, parent, self, type);
-    }
-
-    /* Remove directory entry from parent */
-    {
-        /* Get the parent inode */
-        ECHECK(_split_path(pathname, locals->dirname, locals->basename));
-
-        /* Find and remove the parent's directory entry */
-        {
-            ECHECK(_inode_remove_dirent(parent, locals->basename));
-        }
-    }
-
-done:
-
-    if (locals)
-        free(locals);
 
     return ret;
 }

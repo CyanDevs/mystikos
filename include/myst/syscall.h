@@ -16,6 +16,7 @@
 #include <sys/time.h>
 #include <sys/uio.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 
 #include <myst/defs.h>
@@ -233,6 +234,12 @@ long myst_syscall_wait4(
     int options,
     struct rusage* rusage);
 
+long myst_syscall_waitid(
+    idtype_t idtype,
+    id_t id,
+    siginfo_t* infop,
+    int options);
+
 long myst_syscall_poll(struct pollfd* fds, nfds_t nfds, int timeout);
 
 long myst_syscall_select(
@@ -339,5 +346,7 @@ long myst_syscall_get_process_stack(void** stack, size_t* stack_size);
 
 long myst_syscall_setpgid(pid_t pid, pid_t pgid, myst_thread_t* thread);
 long myst_syscall_getpgid(pid_t pid, myst_thread_t* thread);
+
+long myst_syscall_pause(void);
 
 #endif /* _MYST_SYSCALL_H */

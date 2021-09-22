@@ -11,17 +11,7 @@
 #include <myst/eraise.h>
 #include <myst/kernel.h>
 #include <myst/printf.h>
-
-const void* _check_address(const void* ptr)
-{
-    const uint64_t base = (uint64_t)__myst_kernel_args.image_data;
-    const uint64_t end = base + __myst_kernel_args.image_size;
-
-    if ((uint64_t)ptr < base || (uint64_t)ptr >= end)
-        return NULL;
-
-    return ptr;
-}
+#include <myst/stack.h>
 
 MYST_NOINLINE
 size_t myst_backtrace_impl(void** start_frame, void** buffer, size_t size)
@@ -31,7 +21,7 @@ size_t myst_backtrace_impl(void** start_frame, void** buffer, size_t size)
 
     while (n < size)
     {
-        if (!_check_address(frame) || !_check_address(frame[1]))
+        if (!myst_within_stack(frame) || !myst_is_addr_within_kernel(frame[1]))
             break;
 
         buffer[n++] = frame[1];

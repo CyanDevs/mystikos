@@ -115,6 +115,13 @@ struct pthread* _create_child_pthread_and_copy_stack(
 
     myst_round_up(size, PAGE_SIZE, &size_rounded);
 
+    /* The mmapped memory will be marked by Mystikos kernel as owned by the
+     * parent process, instead of the child process, or the kernel. During child
+     * process exit, the memory will be unmapped. The process memory management
+     * logic that unmaps memory regions still owned by the parent process at
+     * parent process exit relies specific logic during child process exit to
+     * clear the ownership indication. If any part of the relevant design
+     * changes, the implementaiton needs to be reconsidered */
     if (!(map = mmap(
               NULL,
               size_rounded,
@@ -139,11 +146,13 @@ struct pthread* _create_child_pthread_and_copy_stack(
     new->guard_size = guard_size;
     new->self = new;
     new->tsd = (void*)tsd;
+    memcpy(new->tsd, self->tsd, __pthread_tsd_size);
 
     new->detach_state = DT_DETACHED;
     new->robust_list.head = &new->robust_list.head;
     new->canary = self->canary;
     new->sysinfo = self->sysinfo;
+    new->locale = self->locale;
 
     /* copy over the stack if any */
     memcpy(stack_limit, parent_stack, parent_stack_size);
@@ -195,7 +204,7 @@ static bool _within(const void* data, size_t size, const void* ptr)
 ** <current value of rbp on entry to this function, AKA frame pointer>
 ** <local variables>
 **
-** The rpb pointers, AKA frame pointer, is currently a pointer into the parent
+** The rbp pointers, AKA frame pointer, is currently a pointer into the parent
 ** process stack and not a pointer into the new child stack.
 **
 ** This function traverses the frame pointers and fixes it up to be relative
@@ -240,6 +249,12 @@ static int _fixup_frame_pointers(
         goto done;
     }
 
+    if (!_within(parent_stack, parent_stack_size, *(void**)pbp))
+    {
+        assert("contents of parent base pointer out of range" == NULL);
+        goto done;
+    }
+
     if (!_within(child_stack, child_stack_size, cbp))
     {
         assert("child base pointer out of range" == NULL);
@@ -258,6 +273,11 @@ static int _fixup_frame_pointers(
         cbp = *(void**)cbp;
 
         if (!_within(parent_stack, parent_stack_size, pbp))
+        {
+            break;
+        }
+
+        if (!_within(parent_stack, parent_stack_size, *(void**)pbp))
         {
             break;
         }

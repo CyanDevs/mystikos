@@ -571,14 +571,6 @@ long myst_tcall(long n, long params[6])
             return myst_gcov(func, gcov_params);
         }
 #endif
-        case MYST_TCALL_GET_FILE_SIZE:
-        {
-            return myst_tcall_get_file_size((const char*)x1);
-        }
-        case MYST_TCALL_READ_FILE:
-        {
-            return myst_tcall_read_file((const char*)x1, (void*)x2, (size_t)x3);
-        }
         case SYS_read:
         case SYS_write:
         case SYS_close:
@@ -636,6 +628,11 @@ long myst_tcall(long n, long params[6])
         case SYS_chmod:
         case SYS_fdatasync:
         case SYS_fsync:
+        case SYS_pipe2:
+        case SYS_epoll_create1:
+        case SYS_epoll_wait:
+        case SYS_epoll_ctl:
+        case SYS_eventfd2:
         {
             extern long myst_handle_tcall(long n, long params[6]);
             return myst_handle_tcall(n, params);
@@ -799,6 +796,16 @@ long myst_tcall(long n, long params[6])
         {
             uint64_t* args = (uint64_t*)x1;
             return (long)oe_result_str((oe_result_t)args[0]);
+        }
+        case SYS_myst_oe_get_enclave_start_address:
+        {
+            extern const void* __oe_get_enclave_start_address(void);
+            return (long)__oe_get_enclave_start_address();
+        }
+        case SYS_myst_oe_get_enclave_base_address:
+        {
+            extern const void* __oe_get_enclave_base_address(void);
+            return (long)__oe_get_enclave_base_address();
         }
         default:
         {

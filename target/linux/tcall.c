@@ -87,7 +87,9 @@ static long _tcall_clock_getres(clockid_t clk_id, struct timespec* res)
 
 static long _tcall_clock_gettime(clockid_t clk_id, struct timespec* tp)
 {
-    return syscall(SYS_clock_gettime, clk_id, tp);
+    // The clock_gettime() function is much faster than the system call because
+    // it calls into linux-vdso.so and avoids the system call overhead.
+    return clock_gettime(clk_id, tp);
 }
 
 static long _tcall_clock_settime(clockid_t clk_id, struct timespec* tp)
@@ -503,14 +505,6 @@ long myst_tcall(long n, long params[6])
             return myst_gcov(func, gcov_params);
         }
 #endif
-        case MYST_TCALL_GET_FILE_SIZE:
-        {
-            return myst_tcall_get_file_size((const char*)x1);
-        }
-        case MYST_TCALL_READ_FILE:
-        {
-            return myst_tcall_read_file((const char*)x1, (void*)x2, (size_t)x3);
-        }
         case SYS_ioctl:
         {
             int fd = (int)x1;
@@ -595,6 +589,11 @@ long myst_tcall(long n, long params[6])
         case SYS_getcpu:
         case SYS_fdatasync:
         case SYS_fsync:
+        case SYS_pipe2:
+        case SYS_epoll_create1:
+        case SYS_epoll_wait:
+        case SYS_epoll_ctl:
+        case SYS_eventfd2:
         {
             return _forward_syscall(n, x1, x2, x3, x4, x5, x6);
         }

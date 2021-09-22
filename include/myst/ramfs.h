@@ -39,7 +39,7 @@ typedef enum myst_virtual_file_type
 } myst_virtual_file_type_t;
 
 typedef union myst_vcallback {
-    int (*open_cb)(myst_buf_t* buf);
+    int (*open_cb)(myst_buf_t* buf, const char* entrypath);
     struct
     {
         int (*read_cb)(void* buf, size_t count);
@@ -63,8 +63,6 @@ int myst_create_virtual_file(
     mode_t mode,
     myst_vcallback_t v_cb,
     myst_virtual_file_type_t v_type);
-
-int myst_release_tree(myst_fs_t* fs, const char* pathname);
 
 int set_overrides_for_special_fs(myst_fs_t* fs);
 

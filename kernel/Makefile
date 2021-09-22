@@ -34,8 +34,6 @@ ifdef MYST_RELEASE
 DEFINES += -DMYST_RELEASE
 endif
 
-DEFINES += -DMYST_ENABLE_MMAN_PIDS
-
 WARNINGS =
 WARNINGS += -Wall
 WARNINGS += -Werror
@@ -73,6 +71,8 @@ CFLAGS += -Wno-parentheses
 ifdef MYST_ENABLE_GCOV
 CFLAGS += $(GCOV_CFLAGS)
 endif
+
+#CFLAGS += -Wconversion
 
 LDFLAGS =
 LDFLAGS += -nostdlib

@@ -48,6 +48,10 @@ typedef struct myst_kernel_args
     const void* image_data;
     size_t image_size;
 
+    /* The stack used to enter the kernel */
+    const void* enter_stack;
+    size_t enter_stack_size;
+
     /* The loaded kernel ELF image (ELF header start here) */
     const void* kernel_data;
     size_t kernel_size;
@@ -108,6 +112,10 @@ typedef struct myst_kernel_args
     void* mman_pids_data;
     size_t mman_pids_size;
 
+    /* The fdmappings[] vector for fd-mman mappings */
+    void* fdmappings_data;
+    size_t fdmappings_size;
+
     /* The CPIO root file system image */
     char rootfs[PATH_MAX];
     void* rootfs_data;
@@ -164,11 +172,17 @@ typedef struct myst_kernel_args
     /* true if --memcheck option present */
     bool memcheck;
 
+    /* true if --nobrk option is present (if so brk syscall returns -ENOTSUP */
+    bool nobrk;
+
     /* true if --perf option present -- print performance statistics */
     bool perf;
 
     /* true if --report-native-tids is present */
     bool report_native_tids;
+
+    // From the --main-stack-size=<size> option.
+    size_t main_stack_size;
 
     // From the --max-affinity-cpus=<num> option. This setting limits the
     // CPUs reported by sched_getaffinity().
@@ -187,6 +201,11 @@ typedef struct myst_kernel_args
 
     /* pointer to myst_handle_host_signal(). Set by myst_enter_kernel */
     long (*myst_handle_host_signal)(siginfo_t* siginfo, mcontext_t* context);
+
+    /* boolean indicating whether to terminate on unhandled syscall or return
+     * ENOSYS
+     */
+    bool unhandled_syscall_enosys;
 
 } myst_kernel_args_t;
 
@@ -209,5 +228,16 @@ int myst_find_leaks(void);
 void myst_start_shell(const char* msg);
 
 const char* myst_syscall_str(long n);
+
+MYST_INLINE bool myst_is_addr_within_kernel(const void* ptr)
+{
+    const uint64_t base = (uint64_t)__myst_kernel_args.image_data;
+    const uint64_t end = base + __myst_kernel_args.image_size;
+
+    if ((uint64_t)ptr < base || (uint64_t)ptr >= end)
+        return false;
+
+    return true;
+}
 
 #endif /* _MYST_KERNEL_H */

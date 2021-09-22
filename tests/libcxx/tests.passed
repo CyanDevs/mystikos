@@ -182,7 +182,6 @@
 /app/llvm-project/libcxx/test/libcxx/thread/thread.mutex/version.pass.cpp.exe
 /app/llvm-project/libcxx/test/libcxx/thread/thread.threads/thread.thread.class/thread.thread.member/native_handle.pass.cpp.exe
 /app/llvm-project/libcxx/test/libcxx/thread/thread.threads/thread.thread.class/types.pass.cpp.exe
-/app/llvm-project/libcxx/test/libcxx/thread/thread.threads/thread.thread.this/sleep_for.pass.cpp.exe
 /app/llvm-project/libcxx/test/libcxx/thread/thread.threads/version.pass.cpp.exe
 /app/llvm-project/libcxx/test/libcxx/type_traits/is_implicitly_default_constructible.pass.cpp.exe
 /app/llvm-project/libcxx/test/libcxx/utilities/any/version.pass.cpp.exe
@@ -3297,7 +3296,6 @@
 /app/llvm-project/libcxx/test/std/thread/futures/futures.shared_future/get.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.shared_future/move_assign.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.shared_future/move_ctor.pass.cpp.exe
-/app/llvm-project/libcxx/test/std/thread/futures/futures.shared_future/wait_for.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.shared_future/wait.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.shared_future/wait_until.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.state/nothing_to_do.pass.cpp.exe
@@ -3317,7 +3315,6 @@
 /app/llvm-project/libcxx/test/std/thread/futures/futures.unique_future/move_assign.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.unique_future/move_ctor.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.unique_future/share.pass.cpp.exe
-/app/llvm-project/libcxx/test/std/thread/futures/futures.unique_future/wait_for.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.unique_future/wait.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/futures/futures.unique_future/wait_until.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/thread.condition/cv_status.pass.cpp.exe
@@ -3336,7 +3333,6 @@
 /app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/destructor.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/notify_all.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/notify_one.pass.cpp.exe
-/app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/wait_for.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/wait_for_pred.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/wait.pass.cpp.exe
 /app/llvm-project/libcxx/test/std/thread/thread.condition/thread.condition.condvar/wait_pred.pass.cpp.exe

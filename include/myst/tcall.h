@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -54,8 +55,6 @@ typedef enum myst_tcall_number
     MYST_TCALL_LOAD_FSSIG,
     MYST_TCALL_CLOCK_GETRES,
     MYST_TCALL_GCOV,
-    MYST_TCALL_GET_FILE_SIZE,
-    MYST_TCALL_READ_FILE,
 } myst_tcall_number_t;
 
 long myst_tcall(long n, long params[6]);
@@ -159,8 +158,20 @@ int myst_tcall_mprotect(void* addr, size_t len, int prot);
 
 long myst_gcov(const char* func, long params[6]);
 
-int myst_tcall_get_file_size(const char* pathname);
+long myst_tcall_close(int fd);
 
-int myst_tcall_read_file(const char* pathname, char* buf, size_t size);
+long myst_tcall_fcntl(int fd, int cmd, long arg);
+
+long myst_tcall_fstat(int fd, struct stat* statbuf);
+
+long myst_tcall_dup(int oldfd);
+
+long myst_tcall_read(int fd, void* buf, size_t count);
+
+long myst_tcall_write(int fd, const void* buf, size_t count);
+
+long myst_tcall_poll(struct pollfd* fds, nfds_t nfds, int timeout);
+
+long myst_tcall_pipe2(int pipefd[2], int flags);
 
 #endif /* _MYST_TCALL_H */

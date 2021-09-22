@@ -17,9 +17,12 @@ SOURCES += ../shared/poll.c
 SOURCES += ../shared/luks.c
 SOURCES += ../shared/sha256.c
 SOURCES += ../shared/verify.c
-SOURCES += ../shared/copyhostfile.c
 
 CFLAGS = $(DEFAULT_CFLAGS)
+
+ifdef MYST_RELEASE
+CFLAGS += $(OPTIMIZATION_CFLAGS)
+endif
 
 INCLUDES = -I$(INCDIR) -I$(MBEDTLS_INCDIR) -I$(OE_INCDIR)
 

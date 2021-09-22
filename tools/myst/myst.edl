@@ -7,6 +7,8 @@ enclave
 
     include "time.h"
     include "sys/socket.h"
+    include "sys/epoll.h"
+    include "sys/eventfd.h"
     include "myst/shm.h"
     include "myst/fssig.h"
     include "myst/blockdevice.h"
@@ -97,7 +99,8 @@ enclave
 
         long myst_syscall_isatty_ocall(int fd);
 
-        int myst_mprotect_ocall(void* addr, size_t len, int prot);
+        int myst_mprotect_ocall(void* addr, size_t len, int prot)
+            transition_using_threads;
 
         /*
         **======================================================================
@@ -133,6 +136,22 @@ enclave
             [in] const struct timespec* req,
             [out] struct timespec* rem);
 
+        long myst_epoll_create1_ocall(int flags);
+
+        long myst_epoll_wait_ocall(
+            int epfd,
+            [in, out, count=maxevents] struct epoll_event* events,
+            size_t maxevents,
+            int timeout);
+
+        long myst_epoll_ctl_ocall(
+            int epfd,
+            int op,
+            int fd,
+            [in] const struct epoll_event* event);
+
+        long myst_eventfd_ocall(unsigned int initval, int flags);
+
         /*
         **======================================================================
         **
@@ -158,7 +177,8 @@ enclave
             int flags,
             [out, size=src_addr_size] struct sockaddr* src_addr,
             [in, out] socklen_t* addrlen_out,
-            socklen_t src_addr_size);
+            socklen_t src_addr_size)
+            transition_using_threads;
 
         long myst_sendto_ocall(
             int sockfd,
@@ -166,7 +186,8 @@ enclave
             size_t len,
             int flags,
             [in, size=addrlen] const struct sockaddr* dest_addr,
-            socklen_t addrlen);
+            socklen_t addrlen)
+            transition_using_threads;
 
         long myst_socket_ocall(int domain, int type, int protocol);
 
@@ -188,7 +209,8 @@ enclave
             socklen_t msg_controllen,
             int msg_flags,
             /* -- end struct msghdr -- */
-            int flags);
+            int flags)
+            transition_using_threads;
 
         long myst_recvmsg_ocall(
             int sockfd,
@@ -203,7 +225,8 @@ enclave
             [out] socklen_t* msg_controllen_out,
             [out] int* msg_flags,
             /* -- end struct msghdr -- */
-            int flags);
+            int flags)
+            transition_using_threads;
 
         long myst_shutdown_ocall(int sockfd, int how);
 
@@ -248,6 +271,16 @@ enclave
         /*
         **======================================================================
         **
+        ** pipe
+        **
+        **======================================================================
+        */
+
+        long myst_pipe2_ocall([out] int pipefd[2], int flags);
+
+        /*
+        **======================================================================
+        **
         ** hostfs
         **
         **======================================================================
@@ -269,12 +302,14 @@ enclave
         long myst_read_ocall(
             int fd,
             [out, size=count] void* buf,
-            size_t count);
+            size_t count)
+            transition_using_threads;
 
         long myst_write_ocall(
             int fd,
             [in, size=count] const void* buf,
-            size_t count);
+            size_t count)
+            transition_using_threads;
 
         long myst_close_ocall(int fd);
 
@@ -373,13 +408,6 @@ enclave
             gid_t gid);
 
 
-        int myst_get_file_size_ocall([in, string] const char* pathname);
-
-        int myst_read_file_ocall(
-            [in, string] const char* pathname,
-            [out, size=size] char* buf,
-            size_t size);
-
         long myst_chown_ocall(
             [in, string] const char* pathname,
             uid_t owner,
@@ -468,14 +496,16 @@ enclave
             int blkdev,
             uint64_t blkno,
             [in, count=num_blocks] const struct myst_block* blocks,
-            size_t num_blocks);
+            size_t num_blocks)
+            transition_using_threads;
 
         /* reads from the block device */
         ssize_t myst_read_block_device_ocall(
             int blkdev,
             uint64_t blkno,
             [out, count=num_blocks] struct myst_block* blocks,
-            size_t num_blocks);
+            size_t num_blocks)
+            transition_using_threads;
 
         /* load the file-system signature structure from the given image */
         int myst_load_fssig_ocall(
@@ -502,7 +532,7 @@ enclave
         long myst_sched_getaffinity_ocall(
             pid_t pid,
             size_t cpusetsize,
-            [out, size=cpusetsize] uint8_t* mask);
+            [in, out, size=cpusetsize] uint8_t* mask);
 
         void myst_cpuid_ocall(
             uint32_t leaf,

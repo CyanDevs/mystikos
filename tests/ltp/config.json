@@ -4,13 +4,11 @@
 
     // OpenEnclave specific values
     "Debug": 1,
-    "StackMemSize": "256k",
-    "NumUserThreads": 2,
     "ProductID": 1,
     "SecurityVersion": 1,
 
     // Mystikos specific values
-    "MemorySize": "40m",
+    "MemorySize": "200m",
     "HostApplicationParameters": true,
-    "ForkMode":"pseudo_kill_children"
+    "ForkMode":"pseudo"
 }

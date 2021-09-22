@@ -65,8 +65,6 @@ long myst_tcall_wait(uint64_t event, const struct timespec* timeout)
     params[0] = (long)event;
     params[1] = (long)timeout;
     long ret = myst_tcall(MYST_TCALL_WAIT, params);
-    // check for signals
-    myst_signal_process(myst_thread_self());
     return ret;
 }
 
@@ -245,14 +243,44 @@ long myst_gcov(const char* func, long gcov_params[6])
 }
 #endif
 
-int myst_tcall_get_file_size(const char* pathname)
+long myst_tcall_close(int fd)
 {
-    long params[6] = {(long)pathname};
-    return myst_tcall(MYST_TCALL_GET_FILE_SIZE, params);
+    long params[6] = {fd};
+    return myst_tcall(SYS_close, params);
 }
 
-int myst_tcall_read_file(const char* pathname, char* data, size_t size)
+long myst_tcall_fcntl(int fd, int cmd, long arg)
 {
-    long params[6] = {(long)pathname, (long)data, (long)size};
-    return myst_tcall(MYST_TCALL_READ_FILE, params);
+    long params[6] = {fd, cmd, arg};
+    return myst_tcall(SYS_fcntl, params);
+}
+
+long myst_tcall_fstat(int fd, struct stat* statbuf)
+{
+    long params[6] = {fd, (long)statbuf};
+    return myst_tcall(SYS_fstat, params);
+}
+
+long myst_tcall_dup(int oldfd)
+{
+    long params[6] = {oldfd};
+    return myst_tcall(SYS_dup, params);
+}
+
+long myst_tcall_read(int fd, void* buf, size_t count)
+{
+    long params[6] = {fd, (long)buf, count};
+    return myst_tcall(SYS_read, params);
+}
+
+long myst_tcall_write(int fd, const void* buf, size_t count)
+{
+    long params[6] = {fd, (long)buf, count};
+    return myst_tcall(SYS_write, params);
+}
+
+long myst_tcall_pipe2(int pipefd[2], int flags)
+{
+    long params[6] = {(long)pipefd, flags};
+    return myst_tcall(SYS_pipe2, params);
 }

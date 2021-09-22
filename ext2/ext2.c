@@ -52,12 +52,31 @@ struct myst_file
     uint64_t offset;
     int open_flags;
     uint32_t access;    /* (O_RDONLY | O_RDWR | O_WRONLY) */
-    uint32_t operating; /* (O_APPEND) */
+    uint32_t operating; /* (O_APPEND | O_DIRECT | O_NOATIME) */
     int fdflags;        /* file descriptor flags: FD_CLOEXEC */
     char realpath[EXT2_PATH_MAX];
     ext2_dir_t dir;
     _Atomic(size_t) use_count;
 };
+
+MYST_UNUSED
+static bool _valid_ino(const ext2_t* ext2, ext2_ino_t ino)
+{
+    return ino > 0 && ino <= ext2->sb.s_inodes_count;
+}
+
+static void _inode_ref(ext2_t* ext2, ext2_ino_t ino)
+{
+    assert(_valid_ino(ext2, ino));
+    ext2->inode_refs[ino - 1].nopens++;
+}
+
+static ext2_ino_t _inode_unref(ext2_t* ext2, ext2_ino_t ino)
+{
+    assert(_valid_ino(ext2, ino));
+    assert(ext2->inode_refs[ino - 1].nopens > 0);
+    return --ext2->inode_refs[ino - 1].nopens;
+}
 
 static bool _file_valid(const myst_file_t* file)
 {
@@ -1143,12 +1162,23 @@ static const ext2_dirent_t* _find_dirent(
     const uint8_t* end = (uint8_t*)data + size;
     size_t len = strlen(name);
 
-    while (p < end)
+    /* Make sure the fixed-length header portion is in range before accessing*/
+    while (p + sizeof(ext2_dirent_t) - EXT2_PATH_MAX <= end)
     {
         const ext2_dirent_t* ent = (const ext2_dirent_t*)p;
 
-        assert(ent->rec_len != 0);
-        assert(ent->name_len != 0);
+        /* rec_len should not be 0 */
+        if (!ent->rec_len)
+        {
+            assert(0);
+            break;
+        }
+        /* the name string should be within the range */
+        if ((uint8_t*)(ent->name) + ent->name_len > end)
+        {
+            assert(0);
+            break;
+        }
 
         if (_streq(ent->name, ent->name_len, name, len))
             return ent;
@@ -1176,7 +1206,7 @@ static int _load_dirent(
     if (!(p = _find_dirent(name, data, size)))
         ERAISE(-ENOENT);
 
-    memcpy(ent, p, sizeof(ext2_dirent_t));
+    memcpy(ent, p, _dirent_size(p));
 
 done:
 
@@ -1205,8 +1235,8 @@ static int _path_to_ino_recursive(
     int ret = 0;
     struct locals
     {
-        char buf[EXT2_PATH_MAX];
-        char target[EXT2_PATH_MAX];
+        char buf[PATH_MAX];
+        char target[PATH_MAX];
         ext2_inode_t current_inode;
         ext2_dirent_t ent;
         ext2_ino_t ino;
@@ -1231,7 +1261,7 @@ static int _path_to_ino_recursive(
     if (file_ino_out)
         *file_ino_out = 0;
 
-    if (myst_strlcpy(locals->buf, path, sizeof(locals->buf)) >= EXT2_PATH_MAX)
+    if (myst_strlcpy(locals->buf, path, sizeof(locals->buf)) >= PATH_MAX)
         ERAISE(-ENAMETOOLONG);
 
     if (path[0] == '/')
@@ -1544,16 +1574,24 @@ static int _count_dirents(
     const uint8_t* p = (uint8_t*)data;
     const uint8_t* end = (uint8_t*)data + size;
 
-    /* Initilize the count */
+    /* Initialize the count */
     *count = 0;
 
     /* Must be divisiable by block size */
     if ((end - p) % ext2->block_size)
         ERAISE(-EINVAL);
 
-    while (p < end)
+    /* Make sure the fixed-length header portion is in range before accessing*/
+    while (p + sizeof(ext2_dirent_t) - EXT2_PATH_MAX <= end)
     {
         const ext2_dirent_t* ent = (const ext2_dirent_t*)p;
+
+        /* rec_len should not be 0 */
+        if (!ent->rec_len)
+        {
+            assert(0);
+            break;
+        }
 
         if (ent->name_len)
         {
@@ -1562,7 +1600,7 @@ static int _count_dirents(
 
         p += ent->rec_len;
     }
-
+    /* last dirent should extend to the end of a block*/
     if (p != end)
         ERAISE(-EINVAL);
 
@@ -2211,10 +2249,18 @@ static int _check_dirents(const ext2_t* ext2, const void* data, uint32_t size)
     if ((end - p) % ext2->block_size)
         ERAISE(-EINVAL);
 
-    while (p < end)
+    /* Make sure the fixed-length header portion is in range before accessing*/
+    while (p + sizeof(ext2_dirent_t) - EXT2_PATH_MAX <= end)
     {
         uint32_t n;
         const ext2_dirent_t* ent = (const ext2_dirent_t*)p;
+
+        /* rec_len should not be 0 */
+        if (!ent->rec_len)
+        {
+            assert(0);
+            break;
+        }
 
         n = sizeof(ext2_dirent_t) - EXT2_PATH_MAX + ent->name_len;
         n = _next_mult(n, 4);
@@ -2230,7 +2276,7 @@ static int _check_dirents(const ext2_t* ext2, const void* data, uint32_t size)
 
         p += ent->rec_len;
     }
-
+    /* last dirent should extend to the end of a block*/
     if (p != end)
         ERAISE(-EINVAL);
 
@@ -2371,10 +2417,11 @@ static int _inode_write_data(
 
 done:
 
-    _file_clear(&locals->file);
-
     if (locals)
+    {
+        _file_clear(&locals->file);
         free(locals);
+    }
 
     return ret;
 }
@@ -2442,13 +2489,18 @@ static int _remove_dirent(
         ssize_t prev = -1;
 
         ECHECK(myst_buf_reserve(&buf, file_size));
-
-        while (p < end)
+        /* Make sure the fixed-length header portion is in range before
+         * accessing */
+        while (p + sizeof(ext2_dirent_t) - EXT2_PATH_MAX <= end)
         {
             const ext2_dirent_t* e = (const ext2_dirent_t*)p;
 
-            assert(e->rec_len != 0);
-
+            /* rec_len should not be 0 */
+            if (!ent->rec_len)
+            {
+                assert(0);
+                break;
+            }
             /* add entry if not the one being removed */
             if (e != ent)
             {
@@ -2729,7 +2781,9 @@ static int _add_dirent(
         ECHECK(myst_buf_reserve(&buf, file_size));
 
         /* copy existing entries to buffer */
-        while (p < end)
+        /* Make sure the fixed-length header portion is in range before
+         * accessing */
+        while (p + sizeof(ext2_dirent_t) - EXT2_PATH_MAX <= end)
         {
             const ext2_dirent_t* e = (const ext2_dirent_t*)p;
             size_t recsz = _dirent_size(e);
@@ -2851,6 +2905,29 @@ done:
     return ret;
 }
 
+static int _inode_free(ext2_t* ext2, ext2_ino_t ino, ext2_inode_t* inode)
+{
+    int ret = 0;
+
+    assert(inode->i_links_count == 1);
+
+    size_t num_blocks = _inode_get_num_blocks(ext2, inode);
+
+    if (S_ISLNK(inode->i_mode) && inode->i_size < 60)
+        num_blocks = 0;
+
+    for (size_t i = 0; i < num_blocks; i++)
+    {
+        ECHECK(_inode_put_blkno(ext2, ino, inode, i));
+    }
+
+    /* return the inode to the free list */
+    ECHECK(_put_ino(ext2, ino));
+
+done:
+    return ret;
+}
+
 static int _inode_unlink(ext2_t* ext2, ext2_ino_t ino, ext2_inode_t* inode)
 {
     int ret = 0;
@@ -2860,18 +2937,20 @@ static int _inode_unlink(ext2_t* ext2, ext2_ino_t ino, ext2_inode_t* inode)
     /* if this is the final link */
     if (inode->i_links_count == 1)
     {
-        size_t num_blocks = _inode_get_num_blocks(ext2, inode);
+        assert(_valid_ino(ext2, ino));
 
-        if (S_ISLNK(inode->i_mode) && inode->i_size < 60)
-            num_blocks = 0;
-
-        for (size_t i = 0; i < num_blocks; i++)
+        /* if the inode is open */
+        if (ext2->inode_refs[ino - 1].nopens > 0)
         {
-            ECHECK(_inode_put_blkno(ext2, ino, inode, i));
+            /* defer the inode free until close() */
+            ext2->inode_refs[ino - 1].free = 1;
         }
-
-        /* return the inode to the free list */
-        ECHECK(_put_ino(ext2, ino));
+        else
+        {
+            /* free the inode now */
+            ECHECK(_inode_free(ext2, ino, inode));
+            ext2->inode_refs[ino - 1].free = 0;
+        }
     }
     else
     {
@@ -3305,7 +3384,10 @@ int ext2_open(
     {
         /* i.e path was fully resolved
         the file resides in the current fs */
-        *fs_out = fs;
+        if (ext2->wrapper_fs)
+            *fs_out = ext2->wrapper_fs;
+        else
+            *fs_out = fs;
     }
 
     /* find the inode for this file (if it exists) */
@@ -3393,12 +3475,16 @@ int ext2_open(
         file->dir.next = file->dir.data;
         dir_data = NULL;
     }
+
     /* Get the realpath of this file */
     {
         ECHECK(_path_to_ino_realpath(
             ext2, path, follow, NULL, NULL, locals->buf, NULL));
         myst_strlcpy(file->realpath, locals->buf, sizeof(file->realpath));
     }
+
+    /* Increment the reference count for this inode number */
+    _inode_ref(ext2, file->ino);
 
     *file_out = file;
     file = NULL;
@@ -3681,11 +3767,27 @@ int ext2_close(myst_fs_t* fs, myst_file_t* file)
 
     if (--file->use_count == 0)
     {
-        /* if a diretory, then release the directory memory contents */
+        /* if a directory, then release the directory memory contents */
         if (file->dir.data)
             free(file->dir.data);
 
         /* ATTN:TIMESTAMPS */
+
+        /* Decrement the inode reference count */
+        if (_inode_unref(ext2, file->ino) == 0)
+        {
+            /* If unlink() was called while this file was open */
+            if (ext2->inode_refs[file->ino - 1].free)
+            {
+                /* Refresh the inode */
+                ext2_inode_t inode;
+                ECHECK((ext2_read_inode(ext2, file->ino, &inode)));
+
+                /* Free the inode */
+                ECHECK(_inode_free(ext2, file->ino, &inode));
+                ext2->inode_refs[file->ino - 1].free = 0;
+            }
+        }
 
         /* release the file object */
         _file_free(file);
@@ -5003,6 +5105,18 @@ static int _ext2_fcntl(myst_fs_t* fs, myst_file_t* file, int cmd, long arg)
             ret = (int)(file->access | file->operating);
             goto done;
         }
+        case F_SETFL:
+        {
+            if (arg & O_APPEND)
+                file->operating |= O_APPEND;
+            if (arg & O_DIRECT)
+                // ATTN: implement O_DIRECT for files
+                file->operating |= O_DIRECT;
+            if (arg & O_NOATIME)
+                // ATTN: implement O_NOATIME for files
+                file->operating |= O_NOATIME;
+            goto done;
+        }
         case F_SETLKW:
         {
             /* ATTN: silently ignoring locking for now */
@@ -5114,6 +5228,7 @@ static int _ext2_getdents64(
     {
         /* refresh the inode */
         ECHECK((ext2_read_inode(ext2, file->ino, &file->inode)));
+
         /* _load_file perturbs the file offset, save it */
         int saved_offset = file->offset;
         ECHECK(_load_file(ext2, file, &file->dir.data, &file->dir.size));
@@ -5555,6 +5670,21 @@ done:
     return ret;
 }
 
+static int _ext2_release_tree(myst_fs_t* fs, const char* pathname)
+{
+    int ret = 0;
+    ext2_t* ext2 = (ext2_t*)fs;
+
+    if (!_ext2_valid(ext2) || !pathname)
+        ERAISE(-EINVAL);
+
+    ret = -ENOTSUP;
+
+done:
+
+    return ret;
+}
+
 static myst_fs_t _base = {
     {
         .fd_read = (void*)ext2_read,
@@ -5611,6 +5741,7 @@ static myst_fs_t _base = {
     .fs_fchmod = _ext2_fchmod,
     .fs_fdatasync = _ext2_fsync_and_fdatasync,
     .fs_fsync = _ext2_fsync_and_fdatasync,
+    .fs_release_tree = _ext2_release_tree,
 };
 
 int ext2_create(
@@ -5633,6 +5764,16 @@ int ext2_create(
     if (!(ext2 = (ext2_t*)calloc(1, sizeof(ext2_t))))
         ERAISE(-ENOMEM);
 
+    /* Read the superblock */
+    ECHECK(_read_super_block(dev, &ext2->sb));
+
+    /* Allocate the array of inode references */
+    if (!(ext2->inode_refs =
+              calloc(ext2->sb.s_inodes_count, sizeof(ext2_inode_ref_t))))
+    {
+        ERAISE(-ENOMEM);
+    }
+
     /* initialize the base structure */
     memcpy(&ext2->base, &_base, sizeof(myst_fs_t));
 
@@ -5641,9 +5782,6 @@ int ext2_create(
 
     /* Set the mount resolve callback */
     ext2->resolve = resolve_cb;
-
-    /* Read the superblock */
-    ECHECK(_read_super_block(ext2->dev, &ext2->sb));
 
     /* Check the superblock magic number */
     if (ext2->sb.s_magic != EXT2_S_MAGIC)
@@ -5685,12 +5823,29 @@ done:
 
     if (ext2)
     {
+        if (ext2->inode_refs)
+            free(ext2->inode_refs);
+
         if (ext2->groups)
             free(ext2->groups);
 
         free(ext2);
     }
 
+    return ret;
+}
+
+int ext2_set_wrapper_fs(myst_fs_t* fs, myst_fs_t* wrapper_fs)
+{
+    int ret = 0;
+    ext2_t* ext2 = (ext2_t*)fs;
+
+    if (!_ext2_valid(ext2) || !wrapper_fs)
+        ERAISE(-EINVAL);
+
+    ext2->wrapper_fs = wrapper_fs;
+
+done:
     return ret;
 }
 
@@ -5704,6 +5859,9 @@ int ext2_release(myst_fs_t* fs)
 
     if (ext2->groups)
         free(ext2->groups);
+
+    if (ext2->inode_refs)
+        free(ext2->inode_refs);
 
     if (ext2->dev)
         (*ext2->dev->close)(ext2->dev);

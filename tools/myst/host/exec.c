@@ -146,13 +146,39 @@ int exec_launch_enclave(
     myst_buf_t mount_mappings_buf = MYST_BUF_INITIALIZER;
     pid_t target_tid = (pid_t)syscall(SYS_gettid);
     struct timespec start_time;
+    oe_enclave_setting_context_switchless_t switchless_setting = {0, 0};
+    oe_enclave_setting_t settings[8];
+    size_t num_settings = 0;
 
     /* get the start time and pass it into the kernel */
     if (clock_gettime(CLOCK_REALTIME, &start_time) != 0)
         _err("clock_gettime() failed");
 
+    // Initialize the switchless setting; this applies to ocalls with the
+    // transition_using_threads attribute.
+    {
+        switchless_setting.max_enclave_workers = 0;
+        switchless_setting.max_host_workers = 4;
+
+        // clang-format off
+        oe_enclave_setting_t setting =
+        {
+            .setting_type = OE_ENCLAVE_SETTING_CONTEXT_SWITCHLESS,
+            .u.context_switchless_setting = &switchless_setting
+        };
+        // clang-format on
+
+        settings[num_settings++] = setting;
+    }
+
     /* Load the enclave: calls oe_load_extra_enclave_data_hook() */
+#ifndef SUPPRESS_SWITCHLESS
+    r = oe_create_myst_enclave(
+        enc_path, type, flags, settings, num_settings, &_enclave);
+#else
     r = oe_create_myst_enclave(enc_path, type, flags, NULL, 0, &_enclave);
+    (void)settings;
+#endif
 
     if (r != OE_OK)
         _err("failed to load enclave: result=%s", oe_result_str(r));
@@ -231,6 +257,11 @@ Options:\n\
                             and application, where <size> may have a\n\
                             multiplier suffix: k 1024, m 1024*1024, or\n\
                             g 1024*1024*1024\n\
+    --main-stack-size <size>\n\
+                         -- the stack size required by the Mystikos application's\n\
+                            main thread, where <size> may have a\n\
+                            multiplier suffix: k 1024, m 1024*1024, or\n\
+                            g 1024*1024*1024\n\
     --app-config-path <json> -- specifies the configuration json file for\n\
                                 running an unsigned binary. The file can be\n\
                                 the same one used for the signing process.\n\
@@ -240,6 +271,11 @@ Options:\n\
     --host-to-enc-gid-map <host-gid:enc-gid[,host-gid2:enc-gid2,...]>\n\
                          -- comma separated list of gid mappings between\n\
                              the host and the enclave\n\
+    --unhandled-syscall-enosys <true/false>\n\
+                         -- flag indicating if the app must exit when\n\
+                            it encounters an unimplemented syscall\n\
+                            'true' implies the syscall would not terminate\n\
+                            and instead return ENOSYS.\n\
 \n"
 
 int exec_action(int argc, const char* argv[], const char* envp[])
@@ -297,6 +333,10 @@ int exec_action(int argc, const char* argv[], const char* envp[])
         if (cli_getopt(&argc, argv, "--memcheck", NULL) == 0)
             options.memcheck = true;
 
+        /* Get --nobrk option */
+        if (cli_getopt(&argc, argv, "--nobrk", NULL) == 0)
+            options.nobrk = true;
+
         /* Get --perf option */
         if (cli_getopt(&argc, argv, "--perf", NULL) == 0)
             options.perf = true;
@@ -332,8 +372,9 @@ int exec_action(int argc, const char* argv[], const char* envp[])
         {
             fprintf(
                 stderr,
-                "%s: invalid --fork-mode option. Only \"none\" and "
-                "\"pseudo_kill_children\" are currently supported\n",
+                "%s: invalid --fork-mode option. Only \"none\", "
+                "\"pseudo\" and \"pseudo_wait_for_exit_exec\" are currently "
+                "supported\n",
                 argv[0]);
             return 1;
         }
@@ -371,9 +412,62 @@ int exec_action(int argc, const char* argv[], const char* envp[])
             }
         }
 
+        /* Get --main-stack-size */
+        {
+            const char* opt = "--main-stack-size";
+            const char* arg = NULL;
+
+            if (cli_getopt(&argc, argv, opt, &arg) == 0)
+            {
+                if (arg)
+                {
+                    if ((myst_expand_size_string_to_ulong(
+                             arg, &options.main_stack_size) != 0) ||
+                        (myst_round_up(
+                             options.main_stack_size,
+                             PAGE_SIZE,
+                             &options.main_stack_size) != 0))
+                    {
+                        _err(
+                            "%s <size> -- bad suffix (must be k, m, or g)\n",
+                            opt);
+                    }
+                }
+            }
+        }
+
         /* Get --app-config option if it exists, otherwise we use default values
          */
         cli_getopt(&argc, argv, "--app-config-path", &commandline_config);
+
+        /* Get option deciding how to handle unimplemented syscalls */
+        /* Get --unhandled-syscall-enosys */
+        {
+            const char* arg = NULL;
+
+            if ((cli_getopt(&argc, argv, "--unhandled-syscall-enosys", &arg) ==
+                 0))
+            {
+                if (strcmp(arg, "true") == 0)
+                {
+                    options.unhandled_syscall_enosys = true;
+                }
+                else if (strcmp(arg, "false") == 0)
+                {
+                    options.unhandled_syscall_enosys = false;
+                }
+                else
+                {
+                    fprintf(
+                        stderr,
+                        "%s: bad --unhandled-syscall-enosys=%s option. "
+                        "Must be 'true' or 'false'\n",
+                        argv[0],
+                        arg);
+                    return 1;
+                }
+            }
+        }
 
         /* Get --help option */
         if ((cli_getopt(&argc, argv, "--help", NULL) == 0) ||
@@ -525,15 +619,11 @@ long myst_sched_yield_ocall(void)
 
 long myst_poll_wake_ocall(void)
 {
-    extern long myst_tcall_poll_wake();
-
     return myst_tcall_poll_wake();
 }
 
 long myst_poll_ocall(struct pollfd* fds, unsigned long nfds, int timeout)
 {
-    extern long myst_tcall_poll(
-        struct pollfd * lfds, unsigned long nfds, int timeout);
     return myst_tcall_poll(fds, nfds, timeout);
 }
 

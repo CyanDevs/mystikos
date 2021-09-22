@@ -482,9 +482,9 @@ done:
 
 myst_fdtable_t* myst_fdtable_current(void)
 {
-    myst_thread_t* thread = myst_thread_self();
-    myst_assume(thread->fdtable);
-    return thread->fdtable;
+    myst_process_t* process = myst_process_self();
+    myst_assume(process->fdtable);
+    return process->fdtable;
 }
 
 static const char* _type_name(myst_fdtable_type_t type)
@@ -601,5 +601,31 @@ done:
     if (locked)
         myst_spin_unlock(&fdtable->lock);
 
+    return ret;
+}
+
+ssize_t myst_fdtable_count(const myst_fdtable_t* fdtable)
+{
+    ssize_t ret = 0;
+    ssize_t count = 0;
+
+    if (!fdtable)
+        ERAISE(-EINVAL);
+
+    myst_spin_lock(&((myst_fdtable_t*)fdtable)->lock);
+    {
+        for (int i = 0; i < MYST_FDTABLE_SIZE; i++)
+        {
+            const myst_fdtable_entry_t* entry = &fdtable->entries[i];
+
+            if (entry->type == MYST_FDTABLE_TYPE_NONE)
+                count++;
+        }
+    }
+    myst_spin_unlock(&((myst_fdtable_t*)fdtable)->lock);
+
+    ret = count;
+
+done:
     return ret;
 }

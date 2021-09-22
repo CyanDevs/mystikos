@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
+#define _GNU_SOURCE
 #include <assert.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -19,10 +21,12 @@
 #include <myst/fs.h>
 #include <myst/fsgs.h>
 #include <myst/hex.h>
+#include <myst/hostfile.h>
 #include <myst/hostfs.h>
 #include <myst/id.h>
 #include <myst/initfini.h>
 #include <myst/kernel.h>
+#include <myst/limit.h>
 #include <myst/mmanutils.h>
 #include <myst/mount.h>
 #include <myst/options.h>
@@ -33,6 +37,7 @@
 #include <myst/pubkey.h>
 #include <myst/ramfs.h>
 #include <myst/signal.h>
+#include <myst/stack.h>
 #include <myst/strings.h>
 #include <myst/syscall.h>
 #include <myst/thread.h>
@@ -99,25 +104,14 @@ done:
 
 static int _copy_host_etc_files()
 {
-    int ret = 0, size, fd = -1;
+    int ret = 0;
+    int fd = -1;
     const char* resolv_file = "/etc/resolv.conf";
-    char* buf = NULL;
+    void* buf = NULL;
+    size_t buf_size;
     struct stat statbuf;
 
-    if ((size = myst_tcall_get_file_size(resolv_file)) < 0)
-    {
-        myst_eprintf("kernel: failed to get file size %s\n", resolv_file);
-        ERAISE(-EINVAL);
-    }
-
-    if (!(buf = malloc(size)))
-        ERAISE(-ENOMEM);
-
-    if ((myst_tcall_read_file(resolv_file, buf, size)) < 0)
-    {
-        myst_eprintf("kernel: failed to read file %s\n", resolv_file);
-        ERAISE(-EINVAL);
-    }
+    ECHECK(myst_load_host_file(resolv_file, &buf, &buf_size));
 
     if (stat(resolv_file, &statbuf) == 0)
     {
@@ -156,7 +150,7 @@ static int _copy_host_etc_files()
         myst_eprintf("kernel: failed to open file %s\n", resolv_file);
         ERAISE(-EINVAL);
     }
-    if ((myst_write_file_fd(fd, buf, size)) < 0)
+    if ((myst_write_file_fd(fd, buf, buf_size)) < 0)
     {
         myst_eprintf("kernel: failed to write to file %s\n", resolv_file);
         ERAISE(-EINVAL);
@@ -395,7 +389,8 @@ static const char* _getenv(const char** envp, const char* varname)
 static int _create_mem_file(
     const char* path,
     const void* file_data,
-    size_t file_size)
+    size_t file_size,
+    uint32_t file_mode)
 {
     int ret = 0;
     int fd = -1;
@@ -403,7 +398,7 @@ static int _create_mem_file(
     if (!path || !file_data)
         ERAISE(-EINVAL);
 
-    if ((fd = open(path, O_WRONLY | O_CREAT, 0444)) < 0)
+    if ((fd = open(path, O_WRONLY | O_CREAT, file_mode)) < 0)
     {
         myst_panic("kernel: open(): %s\n", path);
         ERAISE(-ENOENT);
@@ -445,30 +440,31 @@ static int _teardown_tmpfs(void)
 }
 #endif
 
-static int _create_main_thread(
+static int _init_main_thread(
+    myst_thread_t* thread,
     uint64_t event,
     const char* cwd,
-    pid_t target_tid,
-    myst_thread_t** thread_out)
+    pid_t target_tid)
 {
     int ret = 0;
-    myst_thread_t* thread = NULL;
     pid_t ppid = myst_generate_tid();
     pid_t pid = myst_generate_tid();
+    myst_process_t* process = NULL;
 
-    if (thread_out)
-        *thread_out = NULL;
-
-    if (!thread_out)
+    if (!thread)
         ERAISE(-EINVAL);
 
-    if (!(thread = calloc(1, sizeof(myst_thread_t))))
+    process = calloc(1, sizeof(myst_process_t));
+    if (process == NULL)
         ERAISE(-ENOMEM);
 
+    thread->process = process;
+    process->main_process_thread = thread;
+
     thread->magic = MYST_THREAD_MAGIC;
-    thread->sid = ppid;
-    thread->ppid = ppid;
-    thread->pid = pid;
+    process->sid = ppid;
+    process->ppid = ppid;
+    process->pid = pid;
     thread->tid = pid;
     thread->target_tid = target_tid;
     thread->event = event;
@@ -484,38 +480,37 @@ static int _create_main_thread(
     thread->savgid = MYST_DEFAULT_GID;
     thread->fsgid = MYST_DEFAULT_GID;
 
-    thread->main.thread_group_lock = MYST_SPINLOCK_INITIALIZER;
-    thread->thread_lock = &thread->main.thread_group_lock;
-    thread->main.umask = MYST_DEFAULT_UMASK;
-    thread->main.pgid = MYST_DEFAULT_PGID;
+    process->thread_group_lock = MYST_SPINLOCK_INITIALIZER;
+    thread->thread_lock = &process->thread_group_lock;
+    process->umask = MYST_DEFAULT_UMASK;
+    process->pgid = MYST_DEFAULT_PGID;
 
-    thread->main.cwd_lock = MYST_SPINLOCK_INITIALIZER;
-    thread->main.cwd = strdup(cwd);
-    if (thread->main.cwd == NULL)
+    process->cwd_lock = MYST_SPINLOCK_INITIALIZER;
+    process->cwd = strdup(cwd);
+    if (process->cwd == NULL)
         ERAISE(-ENOMEM);
+
+    thread->pause_futex = 0;
 
     // Initial process list is just us. All new processes will be inserted in
     // the list. Dont need to set these as they are already NULL, but being here
     // helps to track where main threads are created and torn down!
-    // thread->main.prev_process_thread = NULL;
-    // thread->main.next_process_thread = NULL;
+    // process->prev_process = NULL;
+    // process->next_process = NULL;
 
     /* allocate the new fdtable for this process */
-    ECHECK(myst_fdtable_create(&thread->fdtable));
+    ECHECK(myst_fdtable_create(&process->fdtable));
 
     /* allocate the sigactions array */
-    ECHECK(myst_signal_init(thread));
+    ECHECK(myst_signal_init(process));
 
     /* bind this thread to the target */
     myst_assume(myst_tcall_set_tsd((uint64_t)thread) == 0);
 
-    *thread_out = thread;
-    thread = NULL;
+    /* set up default rlimit values */
+    ECHECK(myst_limit_set_default(process->rlimits));
 
 done:
-
-    if (thread)
-        free(thread);
 
     return ret;
 }
@@ -654,6 +649,9 @@ static void _print_boottime(void)
     }
 }
 
+/* the main thread is the only thread that is not on the heap */
+static myst_thread_t _main_thread;
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstack-usage="
 int myst_enter_kernel(myst_kernel_args_t* args)
@@ -661,11 +659,14 @@ int myst_enter_kernel(myst_kernel_args_t* args)
     int ret = 0;
     int exit_status;
     myst_thread_t* thread = NULL;
+    myst_process_t* process = NULL;
     myst_fstype_t fstype;
     int tmp_ret;
 
     if (!args)
         myst_crash();
+
+    myst_register_stack(args->enter_stack, args->enter_stack_size);
 
     /* args->myst_syscall() can be called from enclave exception handlers */
     args->myst_syscall = myst_syscall;
@@ -703,6 +704,15 @@ int myst_enter_kernel(myst_kernel_args_t* args)
     if (__options.have_syscall_instruction)
         myst_set_gsbase(myst_get_fsbase());
 
+    if (!args->mman_data || !args->mman_size)
+        ERAISE(-EINVAL);
+
+    /* Setup the memory manager (required by malloc) */
+    /* ATTN: functions (e.g., myst_eprintf) depend on malloc cannot
+     * be used prior to this point */
+    if (myst_setup_mman(args->mman_data, args->mman_size) != 0)
+        ERAISE(-EINVAL);
+
     /* call global constructors within the kernel */
     myst_call_init_functions();
 
@@ -717,12 +727,6 @@ int myst_enter_kernel(myst_kernel_args_t* args)
         if (!args->envc || !args->envp)
         {
             myst_eprintf("kernel: bad envc/envp arguments\n");
-            ERAISE(-EINVAL);
-        }
-
-        if (!args->mman_data || !args->mman_size)
-        {
-            myst_eprintf("kernel: bad mman arguments\n");
             ERAISE(-EINVAL);
         }
 
@@ -745,17 +749,11 @@ int myst_enter_kernel(myst_kernel_args_t* args)
         }
     }
 
-    /* Setup the memory manager */
-    if (myst_setup_mman(args->mman_data, args->mman_size) != 0)
-    {
-        myst_eprintf("kernel: memory manager setup failed\n");
-        ERAISE(-EINVAL);
-    }
-
     /* Create the main thread */
-    ECHECK(
-        _create_main_thread(args->event, args->cwd, args->target_tid, &thread));
-    __myst_main_thread = thread;
+    ECHECK(_init_main_thread(
+        &_main_thread, args->event, args->cwd, args->target_tid));
+    thread = &_main_thread;
+    process = thread->process;
 
     myst_copy_host_uid_gid_mappings(&args->host_enc_uid_gid_mappings);
 
@@ -870,73 +868,85 @@ int myst_enter_kernel(myst_kernel_args_t* args)
             myst_print_syscall_times("kernel shutdown", SIZE_MAX);
 
         /* release the kernel stack that was passed to SYS_exit if any */
-        if (thread->kstack)
-            myst_put_kstack(thread->kstack);
-
-        /* free all non-process threads, waiting for all other threads to
-         * shutdown at the same time. Our thread has not been marked as a zombie
-         * yet. */
+        if (thread->exit_kstack)
         {
-            myst_thread_t* t = thread->group_next;
-            while (t)
+            myst_put_kstack(thread->exit_kstack);
+            thread->exit_kstack = NULL;
+        }
+
+        /* Wait for all child threads to shutdown */
+        {
+            myst_assume(thread->group_prev == NULL);
+            while (thread->group_next)
             {
-                myst_thread_t* next = t->group_next;
-                if (t != thread)
-                {
-                    if (t->status != MYST_ZOMBIE)
-                    {
-                        // We still have a thread that has not shut down
-                        // properly yet
-                        myst_sleep_msec(10);
-                        continue;
-                    }
-                    if (t->group_prev)
-                        t->group_prev->group_next = t->group_next;
-                    if (t->group_next)
-                        t->group_next->group_prev = t->group_prev;
-                    myst_signal_free_siginfos(t);
-                    free(t);
-                }
-                t = next;
+                myst_sleep_msec(10);
             }
         }
 
         /* now all the threads have shutdown we can retrieve the exit status */
-        exit_status = thread->exit_status;
+        exit_status = process->exit_status;
+
+        /* release the fdtable */
+        if (process->fdtable)
+        {
+            myst_fdtable_free(process->fdtable);
+            process->fdtable = NULL;
+        }
+
+        /* Remove ourself from /proc/<pid> so other processes know we have gone
+         * if they check */
+        procfs_pid_cleanup(process->pid);
+
+        /* Send SIGHUP to all other active processes */
+        myst_send_sighup_child_processes(process);
+
+        /* Wait for all other processes to exit */
+        while (process->prev_process || process->next_process)
+            myst_sleep_msec(10);
 
         if (args->shell_mode)
             myst_start_shell("\nMystikos shell (exit)\n");
 
-        /* release the fdtable */
-        if (thread->fdtable)
-        {
-            myst_fdtable_free(thread->fdtable);
-            thread->fdtable = NULL;
-        }
-
         /* release signal related heap memory */
-        myst_signal_free(thread);
+        myst_signal_free(process);
         myst_signal_free_siginfos(thread);
 
         /* release the exec stack */
-        if (thread->main.exec_stack)
+        if (process->exec_stack)
         {
-            free(thread->main.exec_stack);
-            thread->main.exec_stack = NULL;
-            thread->main.exec_stack_size = 0;
+            free(process->exec_stack);
+            process->exec_stack = NULL;
+            process->exec_stack_size = 0;
         }
 
         /* release the exec copy of the CRT data */
-        if (thread->main.exec_crt_data)
+        if (process->exec_crt_data)
         {
-            myst_munmap(thread->main.exec_crt_data, thread->main.exec_crt_size);
-            thread->main.exec_crt_data = NULL;
-            thread->main.exec_crt_size = 0;
+            myst_munmap(process->exec_crt_data, process->exec_crt_size);
+            process->exec_crt_data = NULL;
+            process->exec_crt_size = 0;
         }
 
         /* Free CWD */
-        free(thread->main.cwd);
-        thread->main.cwd = NULL;
+        free(process->cwd);
+        process->cwd = NULL;
+
+        free(process);
+        process = NULL;
+
+        /* Free up the thread unmap-on-exit. */
+        {
+            size_t i = thread->unmap_on_exit_used;
+            while (i)
+            {
+                myst_munmap(
+                    thread->unmap_on_exit[i - 1].ptr,
+                    thread->unmap_on_exit[i - 1].size);
+                /* main process/thread is shuting down; skip pid vector update,
+                 * as no more pid vector reference is expected */
+                i--;
+            }
+        }
     }
 
     /* Tear down the temporary file systems */
@@ -955,9 +965,6 @@ int myst_enter_kernel(myst_kernel_args_t* args)
 
     /* Tear down the RAM file system */
     _teardown_ramfs();
-
-    /* Put the thread on the zombie list */
-    myst_zombify_thread(thread);
 
     /* call functions installed with myst_atexit() */
     myst_call_atexit_functions();
@@ -979,6 +986,8 @@ int myst_enter_kernel(myst_kernel_args_t* args)
         myst_syscall_unload_symbols();
 
     /* ATTN: move myst_call_atexit_functions() here */
+
+    myst_unregister_stack(args->enter_stack, args->enter_stack_size);
 
     ret = exit_status;
 

@@ -3,7 +3,9 @@
 #include <myst/kernel.h>
 #include <myst/kstack.h>
 #include <myst/mmanutils.h>
+#include <myst/panic.h>
 #include <myst/spinlock.h>
+#include <myst/stack.h>
 #include <myst/thread.h>
 #include <myst/time.h>
 
@@ -23,9 +25,9 @@ static long _new_kstack(void* arg)
         const int prot = PROT_READ | PROT_WRITE;
         const int flags = MAP_ANONYMOUS | MAP_PRIVATE;
 
-        kstack = myst_mmap(NULL, length, prot, flags, -1, 0);
+        kstack = (myst_kstack_t*)myst_mmap(NULL, length, prot, flags, -1, 0);
 
-        if (kstack == MAP_FAILED)
+        if ((long)kstack < 0)
             return (long)NULL;
     }
 
@@ -59,12 +61,14 @@ myst_kstack_t* myst_get_kstack(void)
         }
     }
     myst_spin_unlock(&_lock);
+    myst_register_stack(kstack->u.__data, sizeof(kstack->u.__data));
 
     return kstack;
 }
 
 void myst_put_kstack(myst_kstack_t* kstack)
 {
+    myst_unregister_stack(kstack->u.__data, sizeof(kstack->u.__data));
     myst_spin_lock(&_lock);
     {
         kstack->u.next = _head;

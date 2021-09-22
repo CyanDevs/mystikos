@@ -55,8 +55,6 @@ Included is a sample JSON configuration where the elements will be described nex
     "version": "0.1",
 
     "Debug": 1,
-    "StackMemSize": "256k",
-    "NumUserThreads": 2,
     "ProductID": 1,
     "SecurityVersion": 1,
 
@@ -72,7 +70,8 @@ Included is a sample JSON configuration where the elements will be described nex
         "ENC-ENVP-1=Enclave_envp_1",
         "ENC-ENVP-2=Enclave_envp_1"
     ],
-    "HostEnvironmentVariables": ["TESTNAME"]
+    "HostEnvironmentVariables": ["TESTNAME"],
+    "UnhandledSyscallEnosys": false
 }
 ```
 
@@ -95,8 +94,6 @@ Next we have settings specific to configuring the SGX enclave itself.
 Setting | Description
 -|-
 Debug | Enable debugging within the SGX enclave, turn off for release builds
-StackMemSize | Stack size for kernel
-NumUserThreads | Number of threads allowed within the enclave. If more threads are created than this number thread creation will fail
 ProductID | The product ID of your application. This is an integer value
 SecurityVersion | Security version of your application. This is an integer value.
 
@@ -109,6 +106,7 @@ Finally we have the Mystikos application specific settings.
 Settings | Description
 -|-
 MemorySize | Amount of memory your application needs to run. Try not to make this just a very large number as the larger this number needs to be the slower load time will be. In this case 40 MB. Value can be bytes (just a number), Kilobytes (number with k after), or megabytes (number with m after)
+MainStackSize | Stack size of your application's main process. Its default value is 1536k (or 1.5M) bytes when this parameter is omitted in the settings. Normally, you do not need to customize this. If running an application generates a OOM error like in #612, try tuning this value, e.g. to 8M. Value can be bytes (just a number), Kilobytes (number with k after), or megabytes (number with m after)
 ApplicationPath | The executable path relative to the root of your appdir. This executable name is used to determine the final application name once packaged.
 ApplicationParameters | Enclave defined application parameters if HostApplicationParameters is set to false.
 HostApplicationParameters | This parameter specifies if application parameters can be specified on the command line or not. If true, the command line arguments are used instead of the ApplicationParameters list of parameters
@@ -118,6 +116,7 @@ Hostname | The default hostname exposed to application
 CurrentWorkingDirectory | The default working directory for the application
 ForkMode | Specify the mode used for the experimental pseudo fork feature. Refer to [doc/design/fork.md](doc/design/fork.md) for more details. The default mode is `none`, which disables the feature.
 Mount | Set if parameters for informing Mystikos to automatically mount a set of directories or ext2 disk images from the host into the TEE. Refer to [doc/design/mount-config-design.md](doc/design/mount-config-design.md) for more details. By default no extra mounts are added to the root filesystem.
+UnhandledSyscallEnosys | This option would prevent the termination of a program using myst_panic when an unimplemented syscall is encountered in the mystikos kernel. The default value is `false`, which implies that we terminate on unhandled syscalls by default. If `true`, it will cause the syscall to return ENOSYS error.
 
 ---
 

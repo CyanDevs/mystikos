@@ -113,7 +113,6 @@ char* clnt_spcreateerror(const char* msg)
 
 int __libc_mallopt(int param_number, int value)
 {
-    assert(0);
     return 0;
 }
 weak_alias(__libc_mallopt, mallopt);
@@ -202,11 +201,6 @@ void* __libc_reallocarray(void* optr, size_t nmemb, size_t elem_size)
     return NULL;
 }
 weak_alias(__libc_reallocarray, reallocarray);
-
-void __explicit_bzero_chk(void* __dest, size_t __len, size_t __destlen)
-{
-    assert(0);
-}
 
 int __libc_alloca_cutoff(size_t size)
 {

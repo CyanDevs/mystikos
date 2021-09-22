@@ -847,6 +847,29 @@ index 771503b2..8a8529b1 100644
  }
 -
 +weak_alias (snprintf, __snprintf);
+diff --git a/src/string/explicit_bzero.c b/src/string/explicit_bzero.c
+index f2e12f23..03f0cd4f 100644
+--- a/src/string/explicit_bzero.c
++++ b/src/string/explicit_bzero.c
+@@ -1,4 +1,5 @@
+ #define _BSD_SOURCE
++#include <stdlib.h>
+ #include <string.h>
+ 
+ void explicit_bzero(void *d, size_t n)
+@@ -6,3 +7,11 @@ void explicit_bzero(void *d, size_t n)
+ 	d = memset(d, 0, n);
+ 	__asm__ __volatile__ ("" : : "r"(d) : "memory");
+ }
++
++void __explicit_bzero_chk(void *d, size_t len, size_t dlen)
++{
++	if (dlen < len)
++		abort();
++	d = memset(d, 0, len);
++	__asm__ __volatile__("" : : "r"(d) : "memory");
++}
+\ No newline at end of file
 diff --git a/src/thread/__unmapself.c b/src/thread/__unmapself.c
 index 31d94e67..f57fdf0c 100644
 --- a/src/thread/__unmapself.c
@@ -1057,6 +1080,18 @@ index 5f491092..51c9fafb 100644
  	}
  
  	if (ret >= 0) {
+diff --git a/src/thread/pthread_getattr_np.c b/src/thread/pthread_getattr_np.c
+index 2881831f..26167cf7 100644
+--- a/src/thread/pthread_getattr_np.c
++++ b/src/thread/pthread_getattr_np.c
+@@ -3,6 +3,7 @@
+ #include "libc.h"
+ #include <sys/mman.h>
+ 
++__attribute__((__weak__))
+ int pthread_getattr_np(pthread_t t, pthread_attr_t *a)
+ {
+ 	*a = (pthread_attr_t){0};
 diff --git a/src/thread/pthread_mutex_consistent.c b/src/thread/pthread_mutex_consistent.c
 index 27c74e5b..efadeec8 100644
 --- a/src/thread/pthread_mutex_consistent.c

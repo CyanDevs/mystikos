@@ -11,6 +11,7 @@
 #include <myst/eraise.h>
 #include <myst/file.h>
 #include <myst/hex.h>
+#include <myst/mmanutils.h>
 #include <myst/round.h>
 #include <myst/strings.h>
 #include <openenclave/bits/sgx/sgxtypes.h>
@@ -33,7 +34,7 @@ static int _add_page(
 }
 
 const region_details* create_region_details_from_package(
-    elf_image_t* myst_elf,
+    sections_t* sections,
     size_t heap_pages)
 {
     char dir[PATH_MAX];
@@ -48,69 +49,56 @@ const region_details* create_region_details_from_package(
             dir) >= sizeof(_details.enc.path))
         _err("buffer overflow when forming mystenc.so path");
 
-    // Load CRT
-    if (elf_image_from_section(
-            myst_elf,
-            ".libmystcrt",
-            &_details.crt.image,
-            (const void**)&_details.crt.buffer,
-            &_details.crt.buffer_size) != 0)
-    {
-        _err("failed to extract CRT section from : %s", get_program_file());
-    }
+    // Set CRT buffer
+    _details.crt.buffer = sections->libmystcrt_data;
+    _details.crt.buffer_size = sections->libmystcrt_size;
     _details.crt.status = REGION_ITEM_BORROWED;
 
-    // Load Kernel
-    if (elf_image_from_section(
-            myst_elf,
-            ".libmystkernel",
-            &_details.kernel.image,
-            (const void**)&_details.kernel.buffer,
-            &_details.kernel.buffer_size) != 0)
+    // Load the kernel image from the buffer:
+    if (elf_image_from_buffer(
+            &_details.crt.image,
+            sections->libmystcrt_data,
+            sections->libmystcrt_size) != 0)
     {
-        _err("failed to extract kernel section from : %s", get_program_file());
+        _err("failed to extract the crt section");
     }
+
+    // Set Kernel buffer
+    _details.kernel.buffer = sections->libmystkernel_data;
+    _details.kernel.buffer_size = sections->libmystkernel_size;
     _details.kernel.status = REGION_ITEM_BORROWED;
 
-    // Load ROOTFS
-    if (elf_find_section(
-            &myst_elf->elf,
-            ".mystrootfs",
-            (unsigned char**)&_details.rootfs.buffer,
-            &_details.rootfs.buffer_size) != 0)
+    // Load the kernel image from the buffer:
+    if (elf_image_from_buffer(
+            &_details.kernel.image,
+            sections->libmystkernel_data,
+            sections->libmystkernel_size) != 0)
     {
-        _err("Failed to extract rootfs from %s.", get_program_file());
+        _err("failed to extract the kernel section");
     }
+
+    // Set ROOTFS buffer
+    _details.rootfs.buffer = sections->mystrootfs_data;
+    _details.rootfs.buffer_size = sections->mystrootfs_size;
     _details.rootfs.status = REGION_ITEM_BORROWED;
 
-    // Load pubkeys:
-    if (elf_find_section(
-            &myst_elf->elf,
-            ".mystpubkeys",
-            (unsigned char**)&_details.pubkeys.buffer,
-            &_details.pubkeys.buffer_size) != 0)
-    {
-        _err("Failed to extract pubkeys from %s.", get_program_file());
-    }
+    // Set pubkeys buffer
+    _details.pubkeys.buffer = sections->mystpubkeys_data;
+    _details.pubkeys.buffer_size = sections->mystpubkeys_size;
     _details.pubkeys.status = REGION_ITEM_BORROWED;
 
-    // Load roothashes section:
-    if (elf_find_section(
-            &myst_elf->elf,
-            ".mystroothashes",
-            (unsigned char**)&_details.roothashes.buffer,
-            &_details.roothashes.buffer_size) != 0)
-    {
-        _err("Failed to extract roothashes from %s.", get_program_file());
-    }
+    // Set roothashes buffer
+    _details.roothashes.buffer = sections->mystroothashes_data;
+    _details.roothashes.buffer_size = sections->mystroothashes_size;
     _details.roothashes.status = REGION_ITEM_BORROWED;
 
+    // Set config buffer
+    _details.config.buffer = sections->mystconfig_data;
+    _details.config.buffer_size = sections->mystconfig_size;
+    _details.config.status = REGION_ITEM_BORROWED;
+
     // Load config data
-    if (elf_find_section(
-            &myst_elf->elf,
-            ".mystconfig",
-            (unsigned char**)&_details.config.buffer,
-            &_details.config.buffer_size) == 0)
+    if (_details.config.buffer && _details.config.buffer_size)
     {
         if (heap_pages == 0)
         {
@@ -799,10 +787,11 @@ static int _add_mman_pids_region(
         ERAISE(-EINVAL);
 
     /* calculate the size in bytes of the pids[] vector */
-    size_t nbytes = mman_pages * sizeof(uint32_t);
+    size_t file_size = mman_pages * sizeof(uint32_t);
 
     /* round nbytes to the next multiple of the page size */
-    ECHECK(myst_round_up(nbytes, PAGE_SIZE, &nbytes));
+    size_t nbytes;
+    ECHECK(myst_round_up(file_size, PAGE_SIZE, &nbytes));
 
     /* calculate the number of pages to be added */
     size_t npages = nbytes / PAGE_SIZE;
@@ -820,8 +809,57 @@ static int _add_mman_pids_region(
         *vaddr += sizeof(page);
     }
 
-    if (myst_region_close(context, name, *vaddr, SIZE_MAX) != 0)
+    if (myst_region_close(context, name, *vaddr, file_size) != 0)
         ERAISE(-EINVAL);
+
+    *(vaddr) += PAGE_SIZE;
+
+done:
+    return ret;
+}
+
+static int _add_fdmappings_region(
+    myst_region_context_t* context,
+    uint64_t* vaddr)
+{
+    int ret = 0;
+    __attribute__((__aligned__(PAGE_SIZE))) uint8_t page[PAGE_SIZE];
+    const size_t mman_pages = _details.mman_size / PAGE_SIZE;
+    const char name[] = MYST_REGION_FDMAPPINGS;
+
+    if (!context || !vaddr)
+        ERAISE(-EINVAL);
+
+    if (myst_region_open(context) != 0)
+        ERAISE(-EINVAL);
+
+    /* calculate the size in bytes of the fdmappings[] vector */
+    size_t file_size = mman_pages * sizeof(myst_fdmapping_t);
+    size_t nbytes;
+
+    /* round nbytes to the next multiple of the page size */
+    ECHECK(myst_round_up(file_size, PAGE_SIZE, &nbytes));
+
+    /* calculate the number of pages to be added */
+    size_t npages = nbytes / PAGE_SIZE;
+
+    memset(page, 0, sizeof(page));
+
+    /* add the zero-filled pages */
+    for (size_t i = 0; i < npages; i++)
+    {
+        int flags = PROT_READ | PROT_WRITE | MYST_REGION_EXTEND;
+
+        if (_add_page(context, *vaddr, page, flags) != 0)
+            ERAISE(-EINVAL);
+
+        *vaddr += sizeof(page);
+    }
+
+    if (myst_region_close(context, name, *vaddr, file_size) != 0)
+        ERAISE(-EINVAL);
+
+    *(vaddr) += PAGE_SIZE;
 
 done:
     return ret;
@@ -868,6 +906,10 @@ int add_regions(void* arg, uint64_t baseaddr, myst_add_page_t add_page)
 
     if (_add_rootfs_region(context, &vaddr) != 0)
         _err("_add_rootfs_region() failed");
+
+    /* add a region to keep track fd-mappings to the mman region */
+    if (_add_fdmappings_region(context, &vaddr) != 0)
+        _err("_add_mman_pids_region() failed");
 
     if (_add_pubkeys_region(context, &vaddr) != 0)
         _err("_add_pubkeys_region() failed");

@@ -36,13 +36,7 @@ OPTS+= --host-to-enc-uid-map 0:0,1:1,2:2,65534:65534,100700:700,100702:702,10070
 OPTS+= --host-to-enc-gid-map 0:0,1:1,2:2,65534:65534,100701:701,100704:704,100705:705,1001000:1000
 endif
 
-# run all the tests for the nightly pipeline
-ifdef MYST_NIGHTLY_TEST
 TESTS=$(shell grep -v "^\#" $(FS)_tests_passed.txt)
-else
-# run only filesystem based tests for the PR pipeline
-TESTS=$(shell grep -v "^\#" $(FS)_fs_tests_passed.txt)
-endif
 
 # remove gcov exception tests when running code coverage
 ifdef MYST_ENABLE_GCOV
@@ -176,7 +170,7 @@ sort:
 
 ifeq ($(FS),ext2fs)
 one:
-	sudo -E $(RUNTEST) $(MYST_EXEC) $(OPTS) $(FS) $(TEST) $(NL)
+	subtest=$(TEST) sudo -E $(RUNTEST) $(MYST_EXEC) $(OPTS) $(FS) $(TEST) $(NL)
 endif
 
 ##==============================================================================
@@ -192,7 +186,7 @@ one:
 	cp appdir/$(TEST) $(HOSTFS)/$(TEST)
 	cp -r appdir/etc $(HOSTFS)/
 	sudo chown -R 0.0 $(HOSTFS)
-	sudo -E $(RUNTEST) $(MYST_EXEC) $(OPTS) $(FS) $(TEST) $(NL)
+	subtest=$(TEST) sudo -E $(RUNTEST) $(MYST_EXEC) $(OPTS) $(FS) $(TEST) $(NL)
 endif
 
 ##==============================================================================
@@ -208,8 +202,28 @@ one:
 	cp appdir/$(TEST) ramfs.appdir/$(TEST)
 	cp -r appdir/etc  ramfs.appdir/
 	$(MYST) mkcpio ramfs.appdir ramfs
-	sudo -E $(RUNTEST) $(MYST_EXEC) $(OPTS) $(FS) $(TEST) $(NL)
+	subtest=$(TEST) sudo -E $(RUNTEST) $(MYST_EXEC) $(OPTS) $(FS) $(TEST) $(NL)
 endif
 
+##==============================================================================
+##
+## pipe-tests:
+##
+##==============================================================================
+
+PIPE_TESTS =
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe01
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe03
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe04
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe06
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe08
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe09
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe/pipe10
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/pipe2/pipe2_01
+PIPE_TESTS += /ltp/testcases/kernel/syscalls/epoll_wait/epoll_wait01
+
+pipe-tests:
+	$(foreach i, $(PIPE_TESTS), $(MAKE) one FS=ext2fs TEST=$i $(NL) )
+
 t:
-	make one FS=ramfs TEST=/ltp/testcases/kernel/syscalls/setsockopt/setsockopt02
+	$(MAKE) FS=ext2fs one TEST=/ltp/testcases/kernel/syscalls/accept4/accept4_01

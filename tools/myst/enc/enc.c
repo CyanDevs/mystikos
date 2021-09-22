@@ -20,6 +20,7 @@
 #include <myst/kstack.h>
 #include <myst/mmanutils.h>
 #include <myst/mount.h>
+#include <myst/process.h>
 #include <myst/ramfs.h>
 #include <myst/regions.h>
 #include <myst/reloc.h>
@@ -468,6 +469,8 @@ struct enter_arg
     pid_t target_tid;
     uint64_t start_time_sec;
     uint64_t start_time_nsec;
+    const void* enter_stack;
+    size_t enter_stack_size;
 };
 
 static long _enter(void* arg_)
@@ -486,9 +489,11 @@ static long _enter(void* arg_)
     bool shell_mode = false;
     bool debug_symbols = false;
     bool memcheck = false;
+    bool nobrk = false;
     bool perf = false;
     bool report_native_tids = false;
     size_t max_affinity_cpus = options ? options->max_affinity_cpus : 0;
+    size_t main_stack_size = options ? options->main_stack_size : 0;
     const char* rootfs = NULL;
     config_parsed_data_t parsed_config;
     bool have_config = false;
@@ -502,6 +507,9 @@ static long _enter(void* arg_)
     const char target[] = "MYST_TARGET=sgx";
     const bool tee_debug_mode = (_test_oe_debug_mode() == 0);
     myst_fork_mode_t fork_mode = options ? options->fork_mode : myst_fork_none;
+    bool unhandled_syscall_enosys =
+        options ? options->unhandled_syscall_enosys
+                : false; // default terminate with myst_panic
 
     memset(&parsed_config, 0, sizeof(parsed_config));
 
@@ -622,10 +630,27 @@ static long _enter(void* arg_)
         max_affinity_cpus = parsed_config.max_affinity_cpus;
     }
 
+    // Override main stack size if present in config
+    if (have_config && parsed_config.main_stack_size)
+    {
+        main_stack_size = parsed_config.main_stack_size;
+    }
+
     // record the configuration for which fork mode
     if (have_config && parsed_config.fork_mode)
     {
         fork_mode = parsed_config.fork_mode;
+    }
+
+    if (have_config && parsed_config.no_brk)
+    {
+        nobrk = options->nobrk = true;
+    }
+
+    // record the configuration for which termination mode
+    if (have_config)
+    {
+        unhandled_syscall_enosys = parsed_config.unhandled_syscall_enosys;
     }
 
     /* Inject the MYST_TARGET environment variable */
@@ -678,6 +703,7 @@ static long _enter(void* arg_)
         shell_mode = tee_debug_mode ? options->shell_mode : false;
         debug_symbols = tee_debug_mode ? options->debug_symbols : false;
         memcheck = tee_debug_mode ? options->memcheck : false;
+        nobrk = options->nobrk;
         perf = tee_debug_mode ? options->perf : false;
 
         report_native_tids =
@@ -740,15 +766,21 @@ static long _enter(void* arg_)
             myst_tcall,
             rootfs,
             err,
+            unhandled_syscall_enosys,
             sizeof(err));
 
         _kargs.shell_mode = shell_mode;
         _kargs.debug_symbols = debug_symbols;
         _kargs.memcheck = memcheck;
+        _kargs.nobrk = nobrk;
         _kargs.perf = perf;
         _kargs.start_time_sec = arg->start_time_sec;
         _kargs.start_time_nsec = arg->start_time_nsec;
         _kargs.report_native_tids = report_native_tids;
+        _kargs.enter_stack = arg->enter_stack;
+        _kargs.enter_stack_size = arg->enter_stack_size;
+        _kargs.main_stack_size =
+            main_stack_size ? main_stack_size : MYST_PROCESS_INIT_STACK_SIZE;
 
         /* whether user-space FSGSBASE instructions are supported */
         _kargs.have_fsgsbase_instructions = options->have_fsgsbase_instructions;
@@ -836,6 +868,9 @@ int myst_enter_ecall(
         return -1;
 
     uint8_t* stack = (uint8_t*)reg.data + reg.size;
+
+    arg.enter_stack = reg.data;
+    arg.enter_stack_size = reg.size;
 
     /* avoid using the tiny TCS stack */
     return (int)myst_call_on_stack(stack, _enter, &arg);
@@ -1047,33 +1082,6 @@ int myst_load_fssig(const char* path, myst_fssig_t* fssig)
     }
 
     return retval;
-}
-
-int myst_tcall_get_file_size(const char* pathname)
-{
-    int retval;
-
-    if (myst_get_file_size_ocall(&retval, pathname) != OE_OK)
-        return -EINVAL;
-
-    return retval;
-}
-
-int myst_tcall_read_file(const char* pathname, char* buf, size_t size)
-{
-    int retval;
-
-    if (myst_read_file_ocall(&retval, pathname, buf, size) != OE_OK)
-        return -EINVAL;
-
-    return retval;
-}
-
-/* linking with openssl crypto library creates a dependency on this */
-int __vfprintf_chk(FILE* stream, int flag, const char* format, va_list ap)
-{
-    (void)flag;
-    return vfprintf(stream, format, ap);
 }
 
 OE_SET_ENCLAVE_SGX2(

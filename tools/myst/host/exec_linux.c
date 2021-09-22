@@ -21,6 +21,7 @@
 #include <myst/file.h>
 #include <myst/hex.h>
 #include <myst/kernel.h>
+#include <myst/process.h>
 #include <myst/regions.h>
 #include <myst/reloc.h>
 #include <myst/round.h>
@@ -60,6 +61,11 @@ Options:\n\
                             and application, where <size> may have a\n\
                             multiplier suffix: k 1024, m 1024*1024, or\n\
                             g 1024*1024*1024\n\
+    --main-stack-size <size>\n\
+                         -- the stack size required by the Mystikos application's\n\
+                            main thread, where <size> may have a\n\
+                            multiplier suffix: k 1024, m 1024*1024, or\n\
+                            g 1024*1024*1024\n\
     --app-config-path <json> -- specifies the configuration json file for\n\
                                 running an unsigned binary. The file can be\n\
                                 the same one used for the signing process.\n\
@@ -69,6 +75,11 @@ Options:\n\
     --host-to-enc-gid-map <host-gid:enc-gid[,host-gid2:enc-gid2,...]>\n\
                          -- comma separated list of gid mappings between\n\
                              the host and the enclave\n\
+    --unhandled-syscall-enosys <true/false>\n\
+                         -- flag indicating if the app must exit when\n\
+                            it encounters an unimplemented syscall\n\
+                            'true' implies the syscall would not terminate\n\
+                            and instead return ENOSYS.\n\
 \n\
 "
 
@@ -79,11 +90,14 @@ struct options
     bool shell_mode;
     bool debug_symbols;
     bool memcheck;
+    bool nobrk;
     bool perf;
     bool report_native_tids;
+    bool unhandled_syscall_enosys;
     size_t max_affinity_cpus;
     char rootfs[PATH_MAX];
     size_t heap_size;
+    size_t main_stack_size;
     const char* app_config_path;
     myst_host_enc_uid_gid_mappings host_enc_uid_gid_mappings;
     myst_fork_mode_t fork_mode;
@@ -125,6 +139,10 @@ static void _get_options(
     if (cli_getopt(argc, argv, "--memcheck", NULL) == 0)
         opts->memcheck = true;
 
+    /* Get --nobrk option */
+    if (cli_getopt(argc, argv, "--nobrk", NULL) == 0)
+        opts->nobrk = true;
+
     /* Get --perf option */
     if (cli_getopt(argc, argv, "--perf", NULL) == 0)
         opts->perf = true;
@@ -135,8 +153,9 @@ static void _get_options(
 
     if (get_fork_mode_opts(argc, argv, &opts->fork_mode) != 0)
         _err(
-            "%s: invalid --fork-mode option. Only \"none\" and "
-            "\"pseudo_kill_children\" are currently supported\n",
+            "%s: invalid --fork-mode option. Only \"none\", "
+            "\"pseudo\" and \"pseudo_wait_for_exit_exec\" are currently "
+            "supported\n",
             argv[0]);
 
     /* Get --max-affinity-cpus */
@@ -200,8 +219,57 @@ static void _get_options(
         }
     }
 
+    /* Get --main-stack-size */
+    {
+        const char* opt = "--main-stack-size";
+        const char* arg = NULL;
+
+        if ((cli_getopt(argc, argv, opt, &arg) == 0))
+        {
+            if (arg)
+            {
+                if ((myst_expand_size_string_to_ulong(
+                         arg, &opts->main_stack_size) != 0) ||
+                    (myst_round_up(
+                         opts->main_stack_size,
+                         PAGE_SIZE,
+                         &opts->main_stack_size) != 0))
+                {
+                    _err("%s <size> -- bad suffix (must be k, m, or g)\n", opt);
+                }
+            }
+        }
+    }
+
     // get app config if present
     cli_getopt(argc, argv, "--app-config-path", &opts->app_config_path);
+
+    /* Get option deciding how to handle unimplemented syscalls */
+    /* Get --unhandled-syscall-enosys */
+    {
+        const char* arg = NULL;
+
+        if ((cli_getopt(argc, argv, "--unhandled-syscall-enosys", &arg) == 0))
+        {
+            if (strcmp(arg, "true") == 0)
+            {
+                opts->unhandled_syscall_enosys = true;
+            }
+            else if (strcmp(arg, "false") == 0)
+            {
+                opts->unhandled_syscall_enosys = false;
+            }
+            else
+            {
+                fprintf(
+                    stderr,
+                    "%s: bad --unhandled-syscall-enosys=%s option. Must "
+                    "be 'true' or 'false'\n",
+                    argv[0],
+                    arg);
+            }
+        }
+    }
 }
 
 myst_kernel_args_t kernel_args;
@@ -209,8 +277,8 @@ myst_kernel_args_t kernel_args;
 static void _sigaction_handler(int sig, siginfo_t* si, void* context)
 {
     ucontext_t* ucontext = (ucontext_t*)context;
-    mcontext_t mcontext = ucontext->uc_mcontext;
-    kernel_args.myst_handle_host_signal(si, &mcontext);
+    mcontext_t* mcontext = &ucontext->uc_mcontext;
+    kernel_args.myst_handle_host_signal(si, mcontext);
 }
 
 static void _install_signal_handlers()
@@ -255,6 +323,10 @@ static int _enter_kernel(
     void* regions_end = (uint8_t*)mmap_addr + mmap_length;
     bool have_config = false;
     myst_fork_mode_t fork_mode = options->fork_mode;
+    bool unhandled_syscall_enosys =
+        options ? options->unhandled_syscall_enosys
+                : false; // default terminate with myst_panic
+    size_t main_stack_size = options->main_stack_size;
 
     memset(&pd, 0, sizeof(pd));
     memset(&kernel_args, 0, sizeof(kernel_args));
@@ -298,6 +370,8 @@ static int _enter_kernel(
 
                 fork_mode = pd.fork_mode;
 
+                unhandled_syscall_enosys = pd.unhandled_syscall_enosys;
+
                 have_config = true;
             }
             else
@@ -306,6 +380,20 @@ static int _enter_kernel(
                 ERAISE(-EINVAL);
             }
         }
+    }
+
+    // Override nobrk and unhandled syscall enosys option if present in config
+    if (have_config)
+    {
+        unhandled_syscall_enosys = pd.unhandled_syscall_enosys;
+        if (pd.no_brk)
+            options->nobrk = true;
+    }
+
+    // Override commandline main stack size if present in config.json
+    if (have_config && pd.main_stack_size)
+    {
+        main_stack_size = pd.main_stack_size;
     }
 
     /* initialize the kernel arguments */
@@ -341,6 +429,7 @@ static int _enter_kernel(
                 tcall,
                 options->rootfs,
                 terr,
+                unhandled_syscall_enosys,
                 sizeof(terr)) != 0)
         {
             snprintf(err, err_size, "init_kernel_args failed: %s", terr);
@@ -355,6 +444,8 @@ static int _enter_kernel(
     kernel_args.debug_symbols = options->debug_symbols;
 
     kernel_args.memcheck = options->memcheck;
+
+    kernel_args.nobrk = options->nobrk;
 
     kernel_args.perf = options->perf;
 
@@ -377,6 +468,9 @@ static int _enter_kernel(
     }
 
     kernel_args.report_native_tids = options->report_native_tids;
+
+    kernel_args.main_stack_size =
+        main_stack_size ? main_stack_size : MYST_PROCESS_INIT_STACK_SIZE;
 
     /* Resolve the the kernel entry point */
     const elf_ehdr_t* ehdr = kernel_args.kernel_data;

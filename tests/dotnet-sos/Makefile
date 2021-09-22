@@ -4,7 +4,6 @@ include $(TOP)/defs.mak
 APPBUILDER=$(TOP)/scripts/appbuilder
 HEAP_SIZE="768M"
 
-MYST_LLDB = $(TOP)/build/openenclave/bin/oelldb
 MYST_LLDB_DOCKER = /build/openenclave/bin/oelldb
 
 OPTS = --report-native-tids
@@ -30,7 +29,7 @@ tests:
 	-e TARGET=$(TARGET) \
 	-v $(abspath .):/app/ -v $(TOP)/build:/build \
 	--device /dev/sgx:/dev/sgx \
-	vtikoo/dotnet-sos-prereqs:0.1 \
+	mystikos/dotnet-sos-prereqs:20200805 \
 	/app/exec.sh $(MYST_LLDB_DOCKER) /build/bin/myst $(EXEC) $(OPTS)
 	@ echo "=== passed test (dotnet-sos)"
 

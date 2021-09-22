@@ -15,12 +15,15 @@ SOURCES += ../../shared/luks.c
 SOURCES += ../../shared/crypto.c
 SOURCES += ../../shared/sha256.c
 SOURCES += ../../shared/verify.c
-SOURCES += ../../shared/copyhostfile.c
 
 CFLAGS = $(OEENCLAVE_CFLAGS)
 
 ifdef MYST_ENABLE_GCOV
 CFLAGS += $(GCOV_CFLAGS)
+endif
+
+ifdef MYST_RELEASE
+CFLAGS += $(OPTIMIZATION_CFLAGS)
 endif
 
 INCLUDES = $(OEENCLAVE_INCLUDES) -I$(INCDIR)
