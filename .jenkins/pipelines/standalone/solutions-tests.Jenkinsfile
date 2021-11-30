@@ -1,6 +1,6 @@
 pipeline {
     agent {
-        label UBUNTU_VERSION == '20.04' ? 'ACC-2004-DC4' : 'ACC-1804-DC4'
+        label UBUNTU_VERSION == '20.04' ? 'e2e-ACC-2004' : 'e2e-ACC-1804'
     }
     options {
         timeout(time: 300, unit: 'MINUTES')

@@ -4,7 +4,7 @@
 
 pipeline {
     agent {
-        label 'ACC-1804-DC4'
+        label 'e2e-ACC-1804'
     }
     options {
         timeout(time: 480, unit: 'MINUTES')
