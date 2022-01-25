@@ -5,6 +5,7 @@ pipeline {
     options {
         timeout(time: 720, unit: 'MINUTES')
         timestamps()
+        // Note: No files from the repository will be available until after the scm checkout stage
         skipDefaultCheckout()
     }
     parameters {

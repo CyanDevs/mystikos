@@ -5,6 +5,7 @@ pipeline {
     options {
         timeout(time: 360, unit: 'MINUTES')
         timestamps()
+        // Note: No files from the repository will be available until after the scm checkout stage
         skipDefaultCheckout()
     }
     parameters {
@@ -24,7 +25,6 @@ pipeline {
         MYST_NIGHTLY_TEST = "${TEST_CONFIG == 'Nightly' || TEST_CONFIG == 'Code Coverage' ? 1 : ''}"
         MYST_ENABLE_GCOV =  "${TEST_CONFIG == 'Code Coverage' ? 1 : ''}"
         TEST_TYPE =         "unit"
-        LCOV_INFO =         "lcov-${GIT_COMMIT[0..7]}-${TEST_TYPE}.info"
         PACKAGE_INSTALL =   "${UBUNTU_VERSION == '20.04' ? 'Ubuntu-2004' : 'Ubuntu-1804'}_${PACKAGE_NAME}.${PACKAGE_EXTENSION}"
         BUILD_USER = sh(
             returnStdout: true,
@@ -34,7 +34,7 @@ pipeline {
     stages {
         stage("Cleanup files") {
             steps {
-                sh "${JENKINS_SCRIPTS}/global/clean-temp.sh"
+                sh 'sudo rm -rf /tmp/myst*'
             }
         }
         stage("Checkout Pull Request") {
@@ -138,6 +138,9 @@ pipeline {
             }
         }
         stage('Upload code coverage') {
+            environment {
+                LCOV_INFO = "lcov-${GIT_COMMIT[0..7]}-${TEST_TYPE}.info"
+            }
             when {
                 expression { params.TEST_CONFIG == 'Code Coverage' }
             }

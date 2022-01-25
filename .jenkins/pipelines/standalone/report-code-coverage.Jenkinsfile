@@ -5,7 +5,6 @@ pipeline {
     options {
         timeout(time: 30, unit: 'MINUTES')
         timestamps()
-        skipDefaultCheckout()
     }
     parameters {
         string(name: "REPOSITORY", defaultValue: "deislabs")

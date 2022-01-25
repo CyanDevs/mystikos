@@ -5,6 +5,7 @@ pipeline {
     options {
         timeout(time: 120, unit: 'MINUTES')
         timestamps()
+        // Note: No files from the repository will be available until after the scm checkout stage
         skipDefaultCheckout()
     }
     parameters {
@@ -26,7 +27,7 @@ pipeline {
     stages {
         stage("Cleanup files") {
             steps {
-                sh "${JENKINS_SCRIPTS}/global/clean-temp.sh"
+                sh 'sudo rm -rf /tmp/myst*'
             }
         }
         stage("Checkout Pull Request") {
