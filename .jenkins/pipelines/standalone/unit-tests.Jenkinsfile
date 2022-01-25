@@ -4,7 +4,8 @@ pipeline {
     }
     options {
         timeout(time: 360, unit: 'MINUTES')
-        timestamps ()
+        timestamps()
+        skipDefaultCheckout()
     }
     parameters {
         choice(name: "UBUNTU_VERSION", choices: ["18.04", "20.04"])
