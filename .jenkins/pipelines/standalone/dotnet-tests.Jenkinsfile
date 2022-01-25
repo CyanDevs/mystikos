@@ -37,7 +37,6 @@ pipeline {
                 sh 'sudo rm -rf /tmp/myst*'
             }
         }
-
         stage('Checkout') {
             parallel {
                 stage('Pull request') {

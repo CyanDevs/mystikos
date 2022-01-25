@@ -31,20 +31,42 @@ pipeline {
                 sh 'sudo rm -rf /tmp/myst*'
             }
         }
-        stage("Checkout Pull Request") {
-            when {
-                expression { params.PULL_REQUEST_ID != "" }
-            }
-            steps {
-                cleanWs()
-                checkout([$class: 'GitSCM',
-                    branches: [[name: "pr/${PULL_REQUEST_ID}"]],
-                    extensions: [],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/deislabs/mystikos',
-                        refspec: "+refs/pull/${PULL_REQUEST_ID}/merge:refs/remotes/origin/pr/${PULL_REQUEST_ID}"
-                    ]]
-                ])
+        stage('Checkout') {
+            parallel {
+                stage('Pull request') {
+                    when {
+                        expression { params.PULL_REQUEST_ID != "" }
+                    }
+                    steps {
+                        retry(5) {
+                            checkout([$class: 'GitSCM',
+                                branches: [[name: "pr/${params.PULL_REQUEST_ID}"]],
+                                extensions: [],
+                                userRemoteConfigs: [[
+                                    url: 'https://github.com/deislabs/mystikos',
+                                    refspec: "+refs/pull/${params.PULL_REQUEST_ID}/merge:refs/remotes/origin/pr/${params.PULL_REQUEST_ID}"
+                                ]]
+                            ])
+                        }
+                    }
+                }
+                stage('Branch') {
+                    when {
+                        allOf {
+                            expression { params.BRANCH != "main" }
+                            expression { params.REPOSITORY != "deislabs" }
+                        }
+                    }
+                    steps {
+                        retry(5) {
+                            checkout([$class: 'GitSCM',
+                                branches: [[name: params.BRANCH]],
+                                extensions: [],
+                                userRemoteConfigs: [[url: "https://github.com/${params.REPOSITORY}/mystikos"]]]
+                            )
+                        }
+                    }
+                }
             }
         }
         stage('Verify commit sync') {
