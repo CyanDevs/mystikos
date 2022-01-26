@@ -23,37 +23,44 @@ pipeline {
            This stage is ran only for Jenkins multibranch pipeline builds
         */
         stage('Checkout') {
-            when {
-                // This is only necessary for manual PR builds or manual branch builds
-                anyOf {
-                    expression { params.PULL_REQUEST_ID != "" }
-                    expression { params.BRANCH != "main" }
-                }
-            }
-            steps {
-                script {
-                    if ( params.PULL_REQUEST_ID ) {
-                        checkout([$class: 'GitSCM',
-                            branches: [[name: "pr/${params.PULL_REQUEST_ID}"]],
-                            extensions: [],
-                            userRemoteConfigs: [[
-                                url: 'https://github.com/deislabs/mystikos',
-                                refspec: "+refs/pull/${params.PULL_REQUEST_ID}/merge:refs/remotes/origin/pr/${params.PULL_REQUEST_ID}"
-                            ]]
-                        ])
-                    } else {
-                        checkout([$class: 'GitSCM',
-                            branches: [[name: params.BRANCH]],
-                            extensions: [],
-                            userRemoteConfigs: [[url: "https://github.com/${params.REPOSITORY}/mystikos"]]]
-                        )
+            parallel {
+                stage('Pull request') {
+                    when {
+                        expression { params.PULL_REQUEST_ID != "" }
                     }
-                    GIT_COMMIT_ID = sh(
-                        returnStdout: true,
-                        script: "git log --max-count=1 --pretty=format:'%H'"
-                    ).trim()
-                    // Set pull request id for standalone builds
-                    PULL_REQUEST_ID = params.PULL_REQUEST_ID
+                    steps {
+                        retry(5) {
+                            checkout([$class: 'GitSCM',
+                                branches: [[name: "pr/${params.PULL_REQUEST_ID}"]],
+                                extensions: [],
+                                userRemoteConfigs: [[
+                                    url: 'https://github.com/deislabs/mystikos',
+                                    refspec: "+refs/pull/${params.PULL_REQUEST_ID}/merge:refs/remotes/origin/pr/${params.PULL_REQUEST_ID}"
+                                ]]
+                            ])
+                        }
+                        script {
+                            // Set pull request id for standalone builds
+                            PULL_REQUEST_ID = params.PULL_REQUEST_ID
+                        }
+                    }
+                }
+                stage('Branch') {
+                    when {
+                        allOf {
+                            expression { params.BRANCH != "main" }
+                            expression { params.REPOSITORY != "deislabs" }
+                        }
+                    }
+                    steps {
+                        retry(5) {
+                            checkout([$class: 'GitSCM',
+                                branches: [[name: params.BRANCH]],
+                                extensions: [],
+                                userRemoteConfigs: [[url: "https://github.com/${params.REPOSITORY}/mystikos"]]]
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -70,6 +77,10 @@ pipeline {
                         // This is the git ref in a Jenkins multibranch pipeline build
                         SOURCE_BRANCH = "origin/PR-${env.CHANGE_ID}"
                     }
+                    GIT_COMMIT_ID = sh(
+                        returnStdout: true,
+                        script: "git log --max-count=1 --pretty=format:'%H'"
+                    ).trim()
                     dir("${WORKSPACE}") {
                         COMMITER_EMAILS = sh(
                             returnStdout: true,

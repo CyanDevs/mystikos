@@ -35,6 +35,15 @@ pipeline {
         stage("Cleanup files") {
             steps {
                 sh 'sudo rm -rf /tmp/myst*'
+                sh """
+                ifconfig || ip addr show
+                ip link show
+                """
+                sh """
+                nslookup github.com
+                """
+                sh 'curl -k https://github.com | tail'
+                sh 'curl -k https://oe-jenkins-dev.westeurope.cloudapp.azure.com/ | tail'
             }
         }
         stage('Checkout') {
