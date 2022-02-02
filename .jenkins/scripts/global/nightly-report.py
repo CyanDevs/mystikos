@@ -10,7 +10,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import ssl
 
-# BUILD_CONSOLE_OUTPUT = f"{url}/job/{job}/{jobNumber}/consoleText"
+import sqlite3
 
 # Jenkins API implementation solely for fetching info
 class JenkinsSession:
@@ -59,7 +59,7 @@ class JenkinsSession:
             response = self.http.get(url)
         if self.debug:
             print(
-                f'GET Request {url}'
+                f'GET Request {url}\n'
                 f'HTTP {str(response.status_code)}\n'
                 f'{response.text}\n'
                 f'Received Cookies {str(response.cookies.get_dict())}'
@@ -91,10 +91,12 @@ class JenkinsSession:
         if json.get('description'):
             return json.get('description')
 
-    def get_job_info(self, job):
+    def get_job_info(self, job, options=""):
         """ Returns information about a job """
 
         url = f"{self.url}/job/{job}/api/json"
+        if options:
+            url += f"?{options}"
         json = self._return_get(url, 'json')
         return json
 
@@ -112,6 +114,14 @@ class JenkinsSession:
         json = self._return_get(url, 'json')
         return json
 
+def connect_database(database_file):
+    conn = None
+    try:
+        conn = sqlite3.connect(database_file)
+    except sqlite3.Error as e:
+        print(e)
+    return conn
+
 def generate_report(headers: list, data: list):
     """ Return html report """
     yield '<a href="https://oe-jenkins-dev.westeurope.cloudapp.azure.com/securityRealm/commenceLogin?from=%2F"><font style="font-size:18px;">Login to Jenkins here if you are not already logged in</font></a> '
@@ -124,8 +134,10 @@ def generate_report(headers: list, data: list):
     for row in data:
         yield '<tr>'
         for key , value in row.items():
-            if key == 'link':
+            if key == 'url':
                 yield f'<td><a href="{value}">{row.get("name")} #{row.get("number")}</a></td>'
+            elif key == 'date':
+                continue
             else:
                 yield f'<td>{value}</td>'
         yield '</tr>'
@@ -143,6 +155,7 @@ def send_email(author, recipient, subject, content, mailtoken):
     content = re.sub('ABORTED', '<font color="yellow"><b>ABORTED</b></font>', content)
     # Change SUCCESS status to green
     content = re.sub('SUCCESS', '<font color="green"><b>SUCCESS</b></font>', content)
+
     msg.attach(MIMEText(content, 'html'))
     s = smtplib.SMTP(host = 'smtp.office365.com', port = '587', timeout = 60)
     s.ehlo()
@@ -151,6 +164,21 @@ def send_email(author, recipient, subject, content, mailtoken):
     s.login('oeciteam@microsoft.com', mailtoken)
     s.send_message(msg)
     s.quit()
+
+def generator_build_nums_from_date(job_info, date, debug=False):
+    """
+    Given a Jenkins job json, this generator will yield all build numbers that occurred on that day
+    """
+    for build in job_info.get('builds', []):
+        build_date = datetime.datetime.utcfromtimestamp(build['timestamp']/1000).strftime('%Y-%m-%d')
+        if build_date == date:
+            yield build['number']
+        if debug:
+            print(
+                f"Found build timestamp of {build['timestamp']}"
+                f"which is {build['timestamp']/1000} UTC which is {build_date}."
+                f"This matches {build_date == date} to {date}."
+            )
 
 
 def main():
@@ -161,18 +189,31 @@ def main():
     parser.add_argument('username', type=str)
     parser.add_argument('api_token', type=str)
     parser.add_argument('--job', type=str, dest='job')
+    parser.add_argument('--date', type=str, dest='date')
     parser.add_argument('--debug', dest='debug', action='store_true')
     parser.add_argument('--mailtoken', type=str, dest='mailtoken')
     args = parser.parse_args()
 
+    # Initialize other variables
+    if args.date:
+        date = args.date
+    else:
+        date = datetime.date.today().strftime('%Y-%m-%d')
+    standalone_build_list = []
+    log = ""
+
+    # connect database
+    conn = connect_database('/home/cyan/python3/reporter.db')
+    nightly_db = conn.cursor()
+
     # Get parent job of the build
     jenkins = JenkinsSession(args.jenkins_url, args.username, args.api_token, args.debug)
-    job_lastCompletedBuild_number = jenkins.get_job_info(args.job).get('lastCompletedBuild').get('number')
-    log = jenkins.get_build_log(args.job, job_lastCompletedBuild_number)
+    job_info = jenkins.get_job_info(args.job, "tree=builds[fullDisplayName,id,number,timestamp]")
+    for match_build in generator_build_nums_from_date(job_info, date, args.debug):
+        log += jenkins.get_build_log(args.job, match_build)
 
     # Use regex to find all standalone builds started by parent job
     re_job_match = re.finditer('Starting building.* (\S+) #(\d+)', log)
-    standalone_build_list = []
     standalone_ignore_list = ['Send-Email']
     if re_job_match:
         for match in re_job_match:
@@ -180,6 +221,16 @@ def main():
 
             # Skip standalone builds that are not tests
             if standalone_build in standalone_ignore_list:
+                continue
+
+            # Check database if this standalone build has already been entered, and skip if so
+            sql = (f'SELECT name, number, os, vm, result, url, date'
+                   f' FROM nightly'
+                   f' WHERE name = "{standalone_build}"'
+                   f' AND number = {standalone_build_number};')
+            nightly_db.execute(sql)
+            query = nightly_db.fetchone()
+            if query:
                 continue
 
             standalone_build_info = jenkins.get_build_info(f'Mystikos/job/Standalone-Pipelines/job/{standalone_build}', standalone_build_number)
@@ -205,26 +256,75 @@ def main():
 
             # Get standalone build logs and extract some basic information
             print(f"Fetching logs from {standalone_build} #{standalone_build_number}")
-            standalone_log = jenkins.get_build_log(f'Mystikos/job/Standalone-Pipelines/job/{standalone_build}', standalone_build_number)
-            standalone_build_list.append({
-                "name": standalone_build,
-                "number": standalone_build_number,
-                "os": f"Ubuntu {standalone_build_os}",
-                "vm": f"ACC-{standalone_build_vm}",
-                "result": standalone_build_info.get('result'),
+            build_values = [
+                standalone_build, # name
+                standalone_build_number, # build_number
+                f"Ubuntu {standalone_build_os}", # operating system used
+                f"ACC-{standalone_build_vm}", # VM type
+                standalone_build_info.get('result'), # Build result
                 # Option 1: Classic console text
-                # "link": f"{args.jenkins_url}/job/Mystikos/job/Standalone-Pipelines/job/{standalone_build}/{standalone_build_number}/console"
+                # url = f"{args.jenkins_url}/job/Mystikos/job/Standalone-Pipelines/job/{standalone_build}/{standalone_build_number}/console"
                 # Option 2: Blue Ocean logs
-                "link": f"{args.jenkins_url}/blue/organizations/jenkins/Mystikos%2FStandalone-Pipelines%2F{standalone_build}/detail/{standalone_build}/{standalone_build_number}/pipeline"
-            })
+                f"{args.jenkins_url}/blue/organizations/jenkins/Mystikos%2FStandalone-Pipelines%2F{standalone_build}/detail/{standalone_build}/{standalone_build_number}/pipeline",
+                str(date)
+            ]
 
-            # Sort based on name
-            standalone_build_list_sorted = sorted(standalone_build_list, key=lambda build:build['name'])
+            # Write to DB
+            values = '", "'.join(build_values)
+            sql = f'INSERT INTO NIGHTLY VALUES ("{values}");'
+            if args.debug:
+                print(sql)
+            nightly_db.execute(sql)
+
+    # Fetch all of date's builds from nightly_db
+    sql = (f'SELECT name, number, os, vm, result, url, date'
+           f' FROM nightly'
+           f' WHERE date = "{date}"'
+           f' ORDER BY name, os, vm;')
+    if args.debug:
+        print(sql)
+    for row in nightly_db.execute(sql):
+        standalone_build_list.append({
+            "name": row[0],
+            "number": row[1],
+            "os": row[2],
+            "vm": row[3],
+            "result": row[4],
+            "url": row[5],
+            "date": row[6]
+        })
+    
+    # HISTORY
+    # Dates for last 6 days
+    previous_days = []
+    for d in range(1,7):
+        previous = datetime.datetime.strptime(date, '%Y-%m-%d') - datetime.timedelta(days=d)
+        previous_days.append(previous.strftime('%Y-%m-%d'))
+    # Fetch history of the 6 previous days
+    for build in standalone_build_list:
+        for day in previous_days:
+            sql = (f'SELECT result'
+                   f' FROM nightly'
+                   f' WHERE name = \"{build.get("name")}\"'
+                   f' AND os = \"{build.get("os")}\"'
+                   f' AND vm = \"{build.get("vm")}\"'
+                   f' AND date = \"{day}\";')
+            nightly_db.execute(sql)
+            query = nightly_db.fetchone()
+            if query:
+                if args.debug:
+                    print(build['name'], day, query[0])
+                build[day] = query[0]
+ 
+     # Close db connection
+    conn.commit()
+    conn.close()
 
     # Compose email
-    headers = ['Name', 'Build #', 'Operating System', 'VM Type', 'Result', 'Link']
-    content = ('\n'.join(generate_report(headers, standalone_build_list_sorted)))
-    today = datetime.date.today()
+    headers = ['Name', 'Build #', 'Operating System', 'VM Type', 'Result', 'Url']
+    headers += previous_days
+    content = ('\n'.join(generate_report(headers, standalone_build_list)))
+
     if args.debug:
         recipients = 'chrisyan@microsoft.com'
     else:
@@ -233,13 +333,12 @@ def main():
     send_email(
         'oeciteam@microsoft.com',
         recipients,
-        f'Mystikos Nightly Test Report {today}',
+        f'Mystikos Nightly Test Report {date}',
         content,
         args.mailtoken
     )
 
-    print(f"Report {today} sent to {recipients}")
-
+    print(f"Report {date} sent to {recipients}")
 
 if __name__ == '__main__':
     main()
