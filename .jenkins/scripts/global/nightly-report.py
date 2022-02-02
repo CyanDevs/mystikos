@@ -309,12 +309,16 @@ def main():
                    f' AND os = \"{build.get("os")}\"'
                    f' AND vm = \"{build.get("vm")}\"'
                    f' AND date = \"{day}\";')
+            if args.debug:
+                print(sql)
             nightly_db.execute(sql)
             query = nightly_db.fetchone()
             if query:
                 if args.debug:
-                    print(build['name'], day, query[0])
+                    print(build['name'], build['os'], build['vm'], day, query[0])
                 build[day] = query[0]
+            else:
+                build[day] = 'N/A'
  
      # Close db connection
     conn.commit()
