@@ -187,4 +187,9 @@ pipeline {
             }
         }
     }
+    post {
+        always {
+            sh "df -h"
+        }
+    }
 }
