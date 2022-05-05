@@ -60,7 +60,7 @@ jobs:
           touch mystikos-$VERSION.tar.gz
           tar -czf mystikos-$VERSION.tar.gz --exclude=mystikos-$VERSION.tar.gz .
           
-          make -j MYST_RELEASE=1 world && make bindist
+          make -j 4 MYST_RELEASE=1 world && make bindist
           exit 0
         displayName: 'Generate release v${{ parameters.VERSION }} artifact'
         condition: eq(variables['Agent.JobStatus'], 'succeeded')
@@ -75,7 +75,7 @@ jobs:
           export PATH="$PATH:$(pwd)/mystikos/bin"
           sed -i 's/BINDIR=$(BUILDDIR)\/bin/BINDIR\=$(TOP)\/mystikos\/bin/g' defs.mak
           sed -i 's/SUBBINDIR=$(BINDIR)\/$(SUBDIR)/SUBBINDIR\=$(BUILDDIR)\/bin\/$(SUBDIR)/g' defs.mak
-          make -j tests ALLTESTS=1 VERBOSE=1
+          make -j 4 tests ALLTESTS=1 VERBOSE=1
         displayName: 'run all tests'
         continueOnError: true
         enabled: true
