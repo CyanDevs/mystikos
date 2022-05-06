@@ -169,13 +169,13 @@ pipeline {
                             docker system prune -a -f
                             make distclean
                         """
-                        sh "make -j 4 world"
+                        sh "make -j3 world"
                     }
                 }
                 stage('Run all tests') {
                     steps {
                         catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                            sh "make -j 4 tests ALLTESTS=1 VERBOSE=1"
+                            sh "make -j3 tests ALLTESTS=1 VERBOSE=1"
                         }
                     }
                 }
@@ -193,7 +193,7 @@ pipeline {
                                        sudo make install
                                        export PATH="/opt/mystikos/bin:$PATH"
                                        export MYSTIKOS_INSTALL_DIR="/opt/mystikos/"
-                                       make -j 4 -C ${WORKSPACE}/samples
+                                       make -j3 -C ${WORKSPACE}/samples
                                        """
                                 }
                             }
