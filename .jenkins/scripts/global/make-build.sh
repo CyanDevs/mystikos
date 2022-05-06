@@ -2,4 +2,4 @@
 
 sudo rm -rf $(git ls-files --others --directory)
 make distclean
-make build
+make -j 4 build
