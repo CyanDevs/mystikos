@@ -152,7 +152,7 @@ pipeline {
                            sudo make install
                            export PATH="/opt/mystikos/bin:$PATH"
                            export MYSTIKOS_INSTALL_DIR="/opt/mystikos/"
-                           make -j3 -C ${WORKSPACE}/samples
+                           make -j2 -C ${WORKSPACE}/samples
                            """
                     }
                 }

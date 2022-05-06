@@ -1,3 +1,3 @@
 sudo rm -rf $(git ls-files --others --directory)
 make distclean
-make -j3 world
+make -j2 world

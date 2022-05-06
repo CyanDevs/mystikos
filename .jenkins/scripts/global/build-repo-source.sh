@@ -1,7 +1,7 @@
 #!/bin/bash
 
 make distclean
-make -j3 world
+make -j2 world
 
 rm build/bin/myst-lldb build/bin/myst-gdb
 cp build/openenclave/bin/oelldb build/bin/myst-lldb
